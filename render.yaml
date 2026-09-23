@@ -1,0 +1,45 @@
+# Render Blueprint — deploys the whole stack (Postgres + API + static frontend) from
+# this one repo. In the Render dashboard: New -> Blueprint -> point at this repo.
+# See apps/api and apps/web READMEs for what each service actually runs.
+#
+# After the first deploy:
+#   1. Open the dealeone-api service's Shell tab and run:
+#        npm run db:seed --workspace apps/api
+#      (only once — it wipes and reseeds demo data, don't rerun against real user data)
+#   2. If Render assigned different subdomains than assumed below (dealeone-api /
+#      dealeone-web were already taken), update CORS_ORIGIN and VITE_API_URL to match
+#      and redeploy both services.
+
+databases:
+  - name: dealeone-db
+    databaseName: dealeone
+    user: dealeone
+    plan: free
+
+services:
+  - type: web
+    name: dealeone-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run db:migrate --workspace apps/api && npm run start --workspace apps/api
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: dealeone-db
+          property: connectionString
+      - key: CORS_ORIGIN
+        value: https://dealeone-web.onrender.com
+      - key: PORT
+        value: 4000
+      - key: JWT_SECRET
+        generateValue: true
+
+  - type: web
+    name: dealeone-web
+    runtime: static
+    buildCommand: npm install && npm run build:web
+    staticPublishPath: apps/web/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://dealeone-api.onrender.com

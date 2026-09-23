@@ -1,0 +1,502 @@
+@import "tailwindcss";
+
+@theme {
+  /* Light-theme rebrand (new green/lime logo): a genuinely light palette, not a
+     brightness tweak of the old near-black one — sampled from the new logo's own light
+     presentation card and its two greens. `--color-accent` is deliberately the DARKER
+     forest green, not the brighter lime: it's used throughout the app far more often as
+     *text/border color drawn on this light background* (prices, active labels, icons,
+     focus rings) than as a large fill, and the lime fails contrast badly in that role on
+     a light page. The lime lives on as `--color-accent-2`, reserved for small bright
+     fills where it sits under its own dark text/icon (gradients, the active map pin, the
+     logo-pulse peak) rather than as text-on-light. */
+  --color-bg: #f7f8f6;
+  --color-surface: #ffffff;
+  --color-surface-2: #eef1ee;
+  /* Desaturated near-neutral, same "visible but not loud" target as every border pass
+     before it — sits around 1.15-1.3:1 against surface/bg (light-on-light contrast reads
+     very differently from dark-on-dark; this is intentionally soft, not the ~1.7-1.9:1
+     the dark-theme border aimed for) since most cards get their edge from
+     `.card-elevated`'s shadow, not this hairline. */
+  --color-border: #dce2dc;
+  /* Forest green — see the comment above for why this, not the lime, is the accent. */
+  --color-accent: #245b32;
+  --color-accent-2: #2f7a42;
+  /* AI-specific accent — kept distinct from the green commerce accent so "Ask AI" surfaces
+     read as a different kind of feature (intelligence, not a deal/price). Deepened from the
+     dark-theme's #8b7cf6 to #6d57e8 — a violet tuned to pop against near-black doesn't
+     automatically clear contrast against off-white; every accent color got re-checked
+     against the new background, not carried over on the assumption it would still work. */
+  --color-ai: #6d57e8;
+  --color-ink: #2c3b34;
+  --color-muted: #666a68;
+  /* Good/bad were also darkened for the same reason as the AI accent above — a status
+     color tuned for a near-black background isn't automatically legible on off-white. */
+  --color-good: #14805a;
+  --color-bad: #c23a3a;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Poppins', 'Inter', system-ui, sans-serif;
+}
+
+/* Border strategy: most surfaces (listing cards, list rows, chips) get their edge from
+   .card-elevated's shadow, not a drawn border — stacking a visible border on top of every
+   shadowed card is what made an earlier dark-theme border pass read as "boxy." border-border
+   is reserved for places a hairline is doing real work: input fields, the top edge of a
+   sheet/modal against the scrim, and the header's bottom edge. Chips use tonal fill
+   (bg-surface-2) for their inactive state instead of an outline. */
+
+/* Motion system — named easing curves instead of ad-hoc cubic-beziers scattered
+   through every rule. The built-in CSS easings (ease, ease-in-out) are too weak to
+   feel intentional; these are stronger variants tuned for UI, not marketing motion.
+   - --ease-out: entrances and tap feedback — starts fast, arrives with authority.
+   - --ease-in-out: things that move *on* screen (dot pager, step progress fill).
+   - --ease-drawer: bottom sheets specifically — an iOS-style deceleration curve
+     (via Ionic Framework) that reads as more physical than a generic ease-out.
+   Never use ease-in for anything UI-facing — it delays the initial movement right
+   when the user is watching most closely, which reads as sluggish. */
+:root {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* `dvh` (dynamic viewport height) tracks the *actual* visible area on mobile Chrome/Safari
+   as the address bar shows/hides — plain 100%/100vh chains resolve against the larger
+   "layout viewport" that includes the space the address bar is currently occupying, which
+   made the bottom nav (and, transiently, the map) render below the real fold until the page
+   was scrolled. Setting it here means every page's `min-h-dvh` (see App.tsx and each page
+   component) resolves against the correct height without every one of them needing the
+   dvh unit spelled out directly. */
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;
+  }
+}
+
+html,
+body {
+  /* Safety net: nothing should ever force horizontal scroll on a screen meant to be
+     used one-handed on a phone. Rows that scroll sideways on purpose (category chips,
+     carousels) open their own overflow-x-auto context, so this doesn't affect them. */
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  /* Two soft accent-tinted glows fixed in the corners give the flat page bg a touch of
+     depth without darkening it — reduced alpha vs. the dark-theme version, since a tint
+     on a light bg reads far more strongly at the same opacity than the same tint did on
+     near-black. Fixed attachment keeps them from scrolling with content. */
+  background:
+    radial-gradient(560px 420px at 12% -8%, rgba(36, 91, 50, 0.05), transparent 60%),
+    radial-gradient(480px 360px at 108% 18%, rgba(109, 87, 232, 0.03), transparent 60%),
+    var(--color-bg);
+  background-attachment: fixed;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(36, 91, 50, 0.25);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid rgba(36, 91, 50, 0.6);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.leaflet-container {
+  background: #eef1ee !important;
+  font-family: var(--font-sans);
+}
+
+.leaflet-control-attribution {
+  background: rgba(255, 255, 255, 0.75) !important;
+  color: var(--color-muted) !important;
+  font-size: 9px !important;
+}
+
+.leaflet-control-attribution a {
+  color: var(--color-muted) !important;
+}
+
+/* Elevation — on a light UI, depth comes from a soft, dark-tinted outer shadow alone;
+   the dark-theme's white inset "catching light" highlight doesn't make sense on a card
+   that's already white, so it's dropped here rather than carried over unchanged. Shadow
+   color is a dark, faintly green-tinted neutral (not flat black) so elevated panels read
+   as lifted paper, not muddy. */
+.card-elevated {
+  box-shadow: 0 6px 18px -10px rgba(30, 40, 35, 0.28);
+}
+
+/* Stronger version for sheets/modals that sit above a scrim. */
+.sheet-elevated {
+  box-shadow: 0 -16px 40px -16px rgba(30, 40, 35, 0.24);
+}
+
+/* Right-edge fade on horizontally-scrolling chip rows — a quiet "there's more"
+   cue instead of chips just stopping dead at the viewport edge. */
+.scroll-fade-x {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+}
+
+/* Bottom-sheet entrance — a quick slide-up so filter/offer sheets feel like
+   they're part of the screen rather than just appearing. Starts from a real
+   off-screen position (translateY, not scale(0) — nothing in the real world
+   pops in from nothing) and settles with the drawer curve for a physical,
+   iOS-like deceleration rather than a generic ease-out. */
+@keyframes sheet-slide-up {
+  from {
+    transform: translateY(28px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.sheet-enter {
+  animation: sheet-slide-up 320ms var(--ease-drawer);
+}
+
+/* Backdrop scrim fade — pairs with .sheet-enter so the dimming and the sheet
+   itself arrive together instead of the black overlay just snapping to full
+   opacity the instant the sheet mounts. */
+@keyframes scrim-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.scrim-enter {
+  animation: scrim-fade-in 200ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-enter,
+  .scrim-enter {
+    animation: none;
+  }
+}
+
+/* Wishlist heart / like-style toggles — a quick overshoot-then-settle "pop" on
+   the moment of activation only (not on every render), so saving something
+   reads as a small burst of feedback rather than the icon just silently
+   swapping fill color. Triggered by adding/removing this class in JS, not by
+   :active, since the feedback should happen on the state change itself. */
+@keyframes icon-pop {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.35);
+  }
+  60% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.icon-pop {
+  animation: icon-pop 380ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-pop {
+    animation: none;
+  }
+}
+
+/* Stagger entrance for short, rarely-seen lists (e.g. the verification-level list —
+   visited occasionally, not something scrolled past dozens of times a day). Each
+   item fades/slides up with a small per-item delay set inline via style, not with
+   :nth-child (the list length varies). Deliberately NOT used on frequently-rendered
+   lists like search results or listing feeds — re-staggering a list every time a
+   filter changes would make browsing feel slow rather than polished. */
+@keyframes stagger-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.stagger-in {
+  animation: stagger-fade-up 320ms var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger-in {
+    animation: none;
+  }
+}
+
+/* ============================================================================
+   Interaction system — glow + tap feedback
+   A small set of composable classes used on every button/tappable surface in
+   the app, so pressing anything feels the same: a quick scale-down, a warm
+   light flash under the finger, and (for primary actions) a soft accent glow
+   that intensifies on press. Built on the existing color tokens — nothing
+   here introduces a new color, just light/shadow using the ones above.
+   ============================================================================ */
+
+/* Radial "flash" under the tap point, layered via ::after so it composes with
+   any background/border the element already has. Elements that use this need
+   position:relative + overflow:hidden (bundled into the classes below). */
+.tap-flash {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.tap-flash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(36, 91, 50, 0.16), transparent 70%);
+  opacity: 0;
+  transition: opacity 260ms ease;
+  pointer-events: none;
+}
+
+.tap-flash:active::after {
+  opacity: 1;
+  transition: opacity 0ms;
+}
+
+/* Primary CTA — solid accent pill with a soft shadow that blooms on press.
+   Replaces the old repeated "rounded-full bg-accent py-3 ..." string. */
+.btn-primary {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--color-accent-2), var(--color-accent));
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 8px 20px -8px rgba(36, 91, 50, 0.45);
+  transition: transform 150ms var(--ease-out), box-shadow 200ms ease, filter 150ms ease;
+}
+
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.3), transparent 70%);
+  opacity: 0;
+  transition: opacity 260ms ease;
+  pointer-events: none;
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow: 0 10px 26px -8px rgba(36, 91, 50, 0.55);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: scale(0.97);
+  box-shadow: 0 4px 14px -6px rgba(36, 91, 50, 0.5);
+}
+
+.btn-primary:active:not(:disabled)::after {
+  opacity: 1;
+  transition: opacity 0ms;
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+}
+
+/* Danger variant — same shape/feel, red instead of green, for destructive actions. */
+.btn-danger {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  background: var(--color-bad);
+  color: #ffffff;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 8px 20px -8px rgba(194, 58, 58, 0.5);
+  transition: transform 150ms var(--ease-out), box-shadow 200ms ease;
+}
+
+.btn-danger::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.3), transparent 70%);
+  opacity: 0;
+  transition: opacity 260ms ease;
+  pointer-events: none;
+}
+
+.btn-danger:active {
+  transform: scale(0.97);
+}
+
+.btn-danger:active::after {
+  opacity: 1;
+  transition: opacity 0ms;
+}
+
+/* Secondary — outline pill for lower-emphasis actions ("Cancel", etc.). */
+.btn-secondary {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: rgba(20, 30, 25, 0.02);
+  color: var(--color-ink);
+  font-weight: 500;
+  padding: 0.75rem 1rem;
+  transition: transform 150ms var(--ease-out), border-color 200ms ease, background 200ms ease;
+}
+
+.btn-secondary:hover {
+  border-color: rgba(36, 91, 50, 0.35);
+}
+
+.btn-secondary:active {
+  transform: scale(0.97);
+  background: rgba(36, 91, 50, 0.08);
+}
+
+/* Circular icon buttons (bell, back chevron, tab icons). Subtle glow ring
+   grows in on press instead of the button just changing color. */
+.icon-btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  transition: transform 150ms var(--ease-out), box-shadow 200ms ease, background 200ms ease;
+}
+
+.icon-btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(36, 91, 50, 0.3), transparent 70%);
+  opacity: 0;
+  transition: opacity 260ms ease;
+  pointer-events: none;
+}
+
+.icon-btn:active {
+  transform: scale(0.88);
+  box-shadow: 0 0 0 6px rgba(36, 91, 50, 0.1);
+}
+
+.icon-btn:active::after {
+  opacity: 1;
+  transition: opacity 0ms;
+}
+
+/* Tappable cards (listing cards, rows) — a gentle lift + accent-tinted border
+   glow on press, so browsing feels tactile without being distracting. */
+.card-interactive {
+  transition: transform 160ms var(--ease-out), box-shadow 200ms ease, border-color 200ms ease;
+}
+
+.card-interactive:active {
+  transform: scale(0.98);
+  border-color: rgba(36, 91, 50, 0.3);
+  box-shadow:
+    0 6px 18px -10px rgba(30, 40, 35, 0.28),
+    0 0 0 1px rgba(36, 91, 50, 0.12);
+}
+
+/* Standalone glow utilities, for non-button elements (the logo, badges). On a light
+   background a colored "glow" is physically just a soft tinted shadow — nothing renders
+   brighter than the white page behind it — so these read as gentle definition, not a
+   literal light source the way they did on the old near-black theme. */
+.glow-accent {
+  filter: drop-shadow(0 0 5px rgba(36, 91, 50, 0.35)) drop-shadow(0 0 12px rgba(36, 91, 50, 0.18));
+}
+
+.glow-accent-ring {
+  box-shadow:
+    0 0 0 1px rgba(36, 91, 50, 0.2),
+    0 0 20px -4px rgba(36, 91, 50, 0.3);
+}
+
+/* Violet counterpart to glow-accent-ring, scoped to the two Ask-AI touchpoints
+   (Explore's sparkle button, Search's AI mode toggle) so AI features read as their
+   own visual language rather than a tinted commerce button. */
+.glow-ai-ring {
+  box-shadow:
+    0 0 0 1px rgba(109, 87, 232, 0.25),
+    0 0 20px -4px rgba(109, 87, 232, 0.35);
+}
+
+/* Peak state is deliberately kept close to lime rather than the darker forest green —
+   a pulse is a momentary flash effect, not a static ambient glow, so it's allowed to
+   read closer to "light" than "shadow," the one place in this palette that does. */
+@keyframes logo-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 5px rgba(36, 91, 50, 0.3)) drop-shadow(0 0 12px rgba(36, 91, 50, 0.16));
+  }
+  50% {
+    filter: drop-shadow(0 0 9px rgba(132, 214, 28, 0.55)) drop-shadow(0 0 22px rgba(132, 214, 28, 0.32));
+  }
+}
+
+.logo-glow-pulse {
+  animation: logo-pulse 3.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-glow-pulse {
+    animation: none;
+  }
+}

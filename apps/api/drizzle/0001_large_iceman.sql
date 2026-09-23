@@ -1,0 +1,1 @@
+ALTER TABLE "listings" ADD COLUMN "approx_location" boolean DEFAULT true NOT NULL;
