@@ -328,9 +328,12 @@ body {
   pointer-events: none;
 }
 
-.btn-primary:hover:not(:disabled) {
-  filter: brightness(1.06);
-  box-shadow: 0 10px 26px -8px rgba(36, 91, 50, 0.55);
+.@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.06);
+    box-shadow: 0 10px 26px -8px rgba(36, 91, 50, 0.55);
+  }
+}
 }
 
 .btn-primary:active:not(:disabled) {
@@ -399,10 +402,11 @@ body {
   transition: transform 150ms var(--ease-out), border-color 200ms ease, background 200ms ease;
 }
 
-.btn-secondary:hover {
-  border-color: rgba(36, 91, 50, 0.35);
+@media (hover: hover) and (pointer: fine) {
+  .btn-secondary:hover {
+    border-color: rgba(36, 91, 50, 0.35);
+  }
 }
-
 .btn-secondary:active {
   transform: scale(0.97);
   background: rgba(36, 91, 50, 0.08);
