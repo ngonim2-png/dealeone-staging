@@ -22,7 +22,7 @@ services:
     runtime: node
     plan: free
     buildCommand: npm install
-    startCommand: npm run db:migrate --workspace apps/api && npm run start --workspace apps/api
+    startCommand: npm run db:migrate --workspace apps/api && npm run db:seed --workspace apps/api && npm run start --workspace apps/api
     envVars:
       - key: DATABASE_URL
         fromDatabase:
