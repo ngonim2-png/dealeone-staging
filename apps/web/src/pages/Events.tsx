@@ -122,7 +122,7 @@ export default function Events() {
         </button>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-6">
+      <div className="flex-1 overflow-y-auto px-4 pb-6">
         {results.length === 0 && (
           <>
             <EmptyState
@@ -145,6 +145,7 @@ export default function Events() {
             )}
           </>
         )}
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
         {results.map(({ event, distance }) => {
           const organizer = sellers.find((s) => s.id === event.organizerId)
           const meta = EVENT_CATEGORY_META[event.category]
@@ -193,6 +194,7 @@ export default function Events() {
             </button>
           )
         })}
+        </div>
       </div>
 
       <BottomNav />

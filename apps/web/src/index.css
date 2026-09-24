@@ -328,6 +328,10 @@ body {
   pointer-events: none;
 }
 
+/* Gated behind (hover: hover) — this is a phone-first app, so almost every tap is on a
+   touch screen, and touch browsers apply :hover on tap and hold it until something else
+   is tapped. An ungated rule here would leave the brightness/shadow bump "stuck" on the
+   button you just pressed instead of only showing for an actual mouse hover. */
 @media (hover: hover) and (pointer: fine) {
   .btn-primary:hover:not(:disabled) {
     filter: brightness(1.06);
@@ -411,6 +415,20 @@ body {
   transform: scale(0.97);
   background: rgba(36, 91, 50, 0.08);
 }
+
+/* Circular icon buttons (bell, back chevron, tab icons). Subtle glow ring
+   grows in on press instead of the button just changing color. */
+.icon-btn {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  transition: transform 150ms var(--ease-out), box-shadow 200ms ease, background 200ms ease;
+}
+
 .icon-btn::after {
   content: '';
   position: absolute;

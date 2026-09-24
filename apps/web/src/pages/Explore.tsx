@@ -509,13 +509,18 @@ export default function Explore() {
             </div>
           </div>
 
-          <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-4">
+          <div className="flex-1 overflow-y-auto px-4 pb-4">
             {listResults.length === 0 && (
               <p className="pt-8 text-center text-sm text-muted">No listings match yet — try widening the radius or clearing filters.</p>
             )}
-            {listResults.map(({ listing }) => (
-              <ListingCard key={listing.id} listing={listing} />
-            ))}
+            {/* Single column on phones (where ListingCard's own row layout already reads
+                well edge-to-edge); tablets/desktop get 2-3 columns instead of one very
+                long, very wide row per listing. */}
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
+              {listResults.map(({ listing }) => (
+                <ListingCard key={listing.id} listing={listing} />
+              ))}
+            </div>
           </div>
         </>
       )}

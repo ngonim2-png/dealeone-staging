@@ -112,7 +112,7 @@ export default function MyListings() {
           </button>
         ))}
       </div>
-      <div className="flex-1 space-y-2 overflow-y-auto px-4 pb-6">
+      <div className="flex-1 overflow-y-auto px-4 pb-6">
         {!loading && filtered.length === 0 && (
           <EmptyState
             icon={ListChecks}
@@ -120,6 +120,7 @@ export default function MyListings() {
             hint={mine.length === 0 ? 'Tap Sell to publish your first listing.' : undefined}
           />
         )}
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
         {filtered.map((l) => (
           <div key={l.id} className="space-y-1.5">
             <ListingCard listing={l} />
@@ -232,6 +233,7 @@ export default function MyListings() {
             )}
           </div>
         ))}
+        </div>
       </div>
     </div>
   )

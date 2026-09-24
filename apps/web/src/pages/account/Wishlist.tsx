@@ -11,7 +11,7 @@ export default function Wishlist() {
   return (
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="My Wishlist" />
-      <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+      <div className="flex-1 overflow-y-auto px-4 py-3">
         {saved.length === 0 && (
           <EmptyState
             icon={Heart}
@@ -19,9 +19,11 @@ export default function Wishlist() {
             hint="Save products you like by tapping the heart icon on any listing."
           />
         )}
-        {saved.map((l) => (
-          <ListingCard key={l.id} listing={l} />
-        ))}
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
+          {saved.map((l) => (
+            <ListingCard key={l.id} listing={l} />
+          ))}
+        </div>
         {saved.length > 0 && (
           <p className="pt-2 text-center text-[11px] text-muted">
             We'll notify you if a saved product drops in price, becomes available closer, or is

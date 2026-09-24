@@ -42,7 +42,12 @@ function App() {
   const { ready, authChecked, error, currentUser } = useApp()
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col bg-bg text-ink">
+    // Phone width (max-w-md, 448px) stays the ceiling up through small screens — it's
+    // still what most people are on — but widens in steps for tablets/desktop instead of
+    // leaving a narrow phone-shaped column stranded in a sea of empty page background.
+    // Individual pieces (BottomNav's floating pill, the login form, Settings' rows) keep
+    // their own tighter caps on purpose — see the responsive-tablet build-log note for why.
+    <div className="mx-auto flex min-h-dvh max-w-md flex-col bg-bg text-ink sm:max-w-xl md:max-w-3xl lg:max-w-5xl">
       {error ? (
         <ApiErrorScreen message={error} />
       ) : !authChecked ? (
