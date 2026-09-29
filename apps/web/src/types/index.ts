@@ -122,13 +122,13 @@ export interface Listing {
   // `status` to 'expired' and the listing drops out of public search/map results.
   feePaidUntil: string
   sponsored: boolean
-  sponsoredUntil?: string // paid-through date for the current Boost, if any (NLe 100/wk)
+  sponsoredUntil?: string // paid-through date for the current Boost, if any (NLe 50/wk)
   featured: boolean
-  featuredUntil?: string // paid-through date for the current Featured badge, if any (NLe 100/wk)
-  // "Top Search Placement" (NLe 100/wk) — pins above others within its own category.
+  featuredUntil?: string // paid-through date for the current Featured badge, if any (NLe 25/wk)
+  // "Top of category" (NLe 50/wk) — pins above others within its own category.
   categoryPinned: boolean
   categoryPinnedUntil?: string
-  // Explore homepage banner ad (NLe 100/wk, business accounts only).
+  // Home-screen banner ad (NLe 100 per 10 days, business accounts only).
   banner: boolean
   bannerUntil?: string
   images: string[] // emoji placeholders standing in for photos
@@ -272,12 +272,13 @@ export interface CurrentUser {
   verificationLevel: VerificationLevel
   rating: number
   ratingCount: number
-  // "Verified-seller fast-track" / "Buyer-Request priority access" (both NLe 100/wk) —
-  // paid-through dates, undefined if never purchased. See account/Verification.tsx and
-  // account/BuyerRequestsFeed.tsx.
+  // Legacy paid verification fast-track (removed Sep 2026) and "Buyer-Request priority
+  // access" (NLe 50/wk) — paid-through dates, undefined if never purchased.
   verificationPriorityUntil?: string
   buyerRequestPriorityUntil?: string
   role: 'user' | 'admin'
+  // Ticked "Send me deals and updates" (at signup or in Settings).
+  marketingOptIn: boolean
 }
 
 // Trust & safety — scam/fraud reporting and dispute resolution (see AppContext's
@@ -361,7 +362,7 @@ export interface Dispute {
 // The bell: offer activity, price drops, saved-search matches, referral rewards.
 export interface AppNotification {
   id: string
-  type: 'offer' | 'offer_update' | 'price_drop' | 'saved_search' | 'referral' | 'system'
+  type: 'offer' | 'offer_update' | 'price_drop' | 'saved_search' | 'referral' | 'reminder' | 'system'
   title: string
   body: string
   url?: string

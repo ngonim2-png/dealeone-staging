@@ -41,6 +41,7 @@ const updateMeSchema = z
     location: z.string().trim().min(1).max(120).optional(),
     isBusiness: z.boolean().optional(),
     businessName: z.string().trim().max(120).optional(),
+    marketingOptIn: z.boolean().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'No fields to update.' })
   .refine((v) => !(v.isBusiness === true && !v.businessName), {
@@ -55,6 +56,7 @@ usersRouter.patch('/me', requireAuth, async (req, res) => {
   }
   const patch: Record<string, unknown> = { ...parsed.data }
   if (parsed.data.isBusiness === false) patch.businessName = null
+  if (parsed.data.marketingOptIn !== undefined) patch.marketingOptInAt = parsed.data.marketingOptIn ? new Date() : null
   const [updated] = await db
     .update(users)
     .set(patch)

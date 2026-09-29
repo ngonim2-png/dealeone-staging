@@ -41,7 +41,7 @@ export default function Invite() {
       title: 'Join me on DEALEONE',
       text: `Buy and sell near you on DEALEONE — see what's for sale around you on a map. Use my invite code ${info.code}:`,
       path: '/',
-      query: `ref=${info.code}`,
+      query: `ref=${info.code}&utm_source=invite`,
     })
     if (r === 'copied') toast.success('Invite link copied — paste it in WhatsApp or SMS.')
     if (r === 'failed') toast.error("Couldn't share — copy your code instead.")

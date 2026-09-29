@@ -10,6 +10,7 @@ import { signSession } from '../lib/jwt'
 import { omitPinHash } from '../lib/sanitize'
 
 import { referrerForCode } from '../lib/referrals'
+import { agentForCode, cleanTag } from '../lib/agents'
 export const authRouter = Router()
 
 // Phone + self-chosen 4-digit PIN — replaces the earlier phone-OTP flow (spec §45/§30). No
@@ -48,8 +49,14 @@ authRouter.post('/check', async (req, res) => {
 const signupSchema = z.object({
   phone: z.string().min(6),
   pin: pinSchema,
-  // Optional invite code (from a friend's link or typed in) — see lib/referrals.ts.
+  // Optional invite code (from a friend's link or typed in) — see lib/referrals.ts. A field
+  // agent's code (AG + 6) goes in the same box — see lib/agents.ts.
   referralCode: z.string().trim().max(20).optional(),
+  // "Send me deals and updates" — marketing consent, unticked by default.
+  marketingOptIn: z.boolean().optional(),
+  // Where they came from (utm_source / utm_campaign on the link that opened the app).
+  source: z.string().max(60).optional(),
+  campaign: z.string().max(100).optional(),
 })
 
 authRouter.post('/signup', async (req, res) => {
@@ -58,7 +65,7 @@ authRouter.post('/signup', async (req, res) => {
     res.status(400).json({ error: parsed.error.flatten() })
     return
   }
-  const { phone, pin, referralCode } = parsed.data
+  const { phone, pin, referralCode, marketingOptIn, source, campaign } = parsed.data
 
   const [existing] = await db.select().from(users).where(eq(users.phone, phone)).limit(1)
   if (existing) {
@@ -66,6 +73,8 @@ authRouter.post('/signup', async (req, res) => {
     return
   }
 
+  const agentId = await agentForCode(referralCode)
+  const referredById = agentId ? null : await referrerForCode(referralCode)
   const [user] = await db
     .insert(users)
     .values({
@@ -74,7 +83,12 @@ authRouter.post('/signup', async (req, res) => {
       location: 'Freetown',
       pinHash: hashPin(pin),
       verificationLevel: 1, // phone provided, per spec §30 Level 1 — see note above re: OTP
-      referredById: await referrerForCode(referralCode),
+      referredById,
+      agentId,
+      marketingOptIn: marketingOptIn === true,
+      marketingOptInAt: marketingOptIn === true ? new Date() : null,
+      signupSource: cleanTag(source, 40) ?? (agentId ? 'agent' : referredById ? 'invite' : 'direct'),
+      signupCampaign: cleanTag(campaign, 80),
     })
     .returning()
 

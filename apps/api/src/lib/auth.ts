@@ -36,6 +36,14 @@ export async function attachUser(req: Request, _res: Response, next: NextFunctio
         req.userId = u.id
         req.userRole = u.role
         req.userSuspended = u.suspended
+        // "Last seen", at most once an hour per user (fire-and-forget — never slows a request).
+        const now = Date.now()
+        if (!u.lastSeenAt || now - u.lastSeenAt.getTime() > 3600_000) {
+          db.update(users)
+            .set({ lastSeenAt: new Date(now) })
+            .where(eq(users.id, u.id))
+            .catch((err) => console.error('lastSeen update failed', err))
+        }
       }
     }
   }

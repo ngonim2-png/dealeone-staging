@@ -25,6 +25,8 @@ export default function Login() {
   // Pre-filled when they arrived through a friend's invite link (see lib/referral.ts).
   const [inviteCode, setInviteCode] = useState(() => getStoredReferralCode() ?? '')
   const [showInvite, setShowInvite] = useState(() => !!getStoredReferralCode())
+  // Marketing consent — off unless they tick it.
+  const [optIn, setOptIn] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -79,7 +81,7 @@ export default function Login() {
     setLoading(true)
     setError(null)
     try {
-      await signup(phone.trim(), newPin, inviteCode.trim() || undefined)
+      await signup(phone.trim(), newPin, inviteCode.trim() || undefined, optIn)
       setStep('name')
     } catch (err) {
       setError(friendlyError(err, "Couldn't create your account — try again."))
@@ -213,7 +215,7 @@ export default function Login() {
               <input
                 value={inviteCode}
                 onChange={(e) => setInviteCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12))}
-                placeholder="Invite code (optional)"
+                placeholder="Invite or agent code (optional)"
                 aria-label="Invite code"
                 autoCapitalize="characters"
                 className="mt-2 w-full rounded-xl border border-border bg-surface-2 px-4 py-2.5 text-center text-sm uppercase tracking-widest text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
@@ -223,6 +225,15 @@ export default function Login() {
                 Have an invite code?
               </button>
             )}
+            <label className="mt-3 flex items-start gap-2.5 text-left text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={optIn}
+                onChange={(e) => setOptIn(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 accent-[#245b32]"
+              />
+              <span>Send me deals and updates by SMS or WhatsApp. You can stop any time in Settings.</span>
+            </label>
             {error && <p className="mt-2 text-left text-xs text-bad">{error}</p>}
             <button
               onClick={submitSignup}

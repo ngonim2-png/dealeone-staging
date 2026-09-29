@@ -9,7 +9,7 @@ import { api, errorMessage } from '../../lib/api'
 import { formatPrice } from '../../lib/format'
 import { useToast } from '../../components/Toast'
 
-const BUYER_REQUEST_PRIORITY_FEE_PER_WEEK = 100
+const BUYER_REQUEST_PRIORITY_FEE_PER_WEEK = 50 // rate card, Sep 2026 (see apps/api/src/lib/billing.ts)
 
 interface FeedRow {
   buyerRequest: {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Loader2, Rocket, Star, MapPin as PinIcon, Megaphone, Zap, Search, BadgeCheck, ArrowRight } from 'lucide-react'
+import { Loader2, Rocket, Star, MapPin as PinIcon, Megaphone, Search, BadgeCheck, ArrowRight } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import TopBar from '../components/TopBar'
 import BottomNav from '../components/BottomNav'
@@ -12,18 +12,11 @@ import { formatPrice } from '../lib/format'
 import type { Listing } from '../types'
 import { useToast } from '../components/Toast'
 import LoadError from '../components/LoadError'
+import { useRateCard } from '../lib/rateCard'
 
-// New bottom-nav tab that centralizes every paid-promotion action that already existed
-// scattered across Account (My Listings' boost/feature/pin/banner buttons, Verification's
-// fast-track purchase, Buyer Requests' priority purchase). Nothing here is new server-side —
-// it all calls the same AppContext actions those pages already use — this just gives sellers
-// one place to go instead of hunting through Account for "how do I get more visibility."
-const BOOST_FEE_PER_WEEK = 100
-const FEATURE_FEE_PER_WEEK = 100
-const CATEGORY_PIN_FEE_PER_WEEK = 100
-const BANNER_FEE_PER_WEEK = 100
-const VERIFICATION_PRIORITY_FEE_PER_WEEK = 100
-const BUYER_REQUEST_PRIORITY_FEE_PER_WEEK = 100
+// Bottom-nav tab that gathers every paid promotion in one place (My Listings'
+// boost/feature/pin/banner buttons and Buyer Requests' priority access). Prices come from
+// the API's rate card (lib/rateCard.ts).
 
 function shortDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -40,7 +33,6 @@ export default function Promote() {
     featureListing,
     pinListingCategory,
     bannerListing,
-    purchaseVerificationPriority,
     purchaseBuyerRequestPriority,
   } = useApp()
   const [mine, setMine] = useState<Listing[]>([])
@@ -48,7 +40,7 @@ export default function Promote() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const [busy, setBusy] = useState<Record<string, ActionKind | undefined>>({})
-  const [verifyBusy, setVerifyBusy] = useState(false)
+  const card = useRateCard()
   const [requestBusy, setRequestBusy] = useState(false)
 
   useEffect(() => {
@@ -76,9 +68,6 @@ export default function Promote() {
 
   if (!currentUser) return null // App.tsx only renders this route once bootstrap is ready
 
-  const hasVerifyPriority = !!(
-    currentUser.verificationPriorityUntil && new Date(currentUser.verificationPriorityUntil) > new Date()
-  )
   const hasRequestPriority = !!(
     currentUser.buyerRequestPriorityUntil && new Date(currentUser.buyerRequestPriorityUntil) > new Date()
   )
@@ -100,18 +89,6 @@ export default function Promote() {
     }
   }
 
-  const buyVerifyPriority = async () => {
-    setVerifyBusy(true)
-    try {
-      await purchaseVerificationPriority()
-    } catch (err) {
-      console.error('purchase verification priority failed', err)
-      toast.error(describeError(err))
-    } finally {
-      setVerifyBusy(false)
-    }
-  }
-
   const buyRequestPriority = async () => {
     setRequestBusy(true)
     try {
@@ -130,7 +107,7 @@ export default function Promote() {
       <div className="flex-1 space-y-4 overflow-y-auto px-4 pb-6">
         <div>
           <h1 className="font-display text-xl font-bold tracking-tight">Promote</h1>
-          <p className="text-sm text-muted">Get seen first — boost listings, get verified faster, or jump the queue.</p>
+          <p className="text-sm text-muted">Get seen first — boost your listings or see buyer requests before anyone else.</p>
         </div>
 
         {!currentUser.isBusiness && (
@@ -151,27 +128,6 @@ export default function Promote() {
 
         <div className="card-elevated flex items-center gap-3 rounded-xl border border-accent/30 bg-accent/5 p-3.5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
-            <Zap size={16} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-ink">Verified-seller fast-track</p>
-            <p className="text-xs text-muted">
-              {hasVerifyPriority
-                ? `Active until ${new Date(currentUser.verificationPriorityUntil!).toLocaleDateString()}`
-                : `Jump to the front of the admin review queue · ${formatPrice(VERIFICATION_PRIORITY_FEE_PER_WEEK)}/wk`}
-            </p>
-          </div>
-          <button
-            onClick={buyVerifyPriority}
-            disabled={verifyBusy}
-            className="tap-flash flex min-h-10 min-w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-accent-2 to-accent px-4 text-xs font-semibold text-white shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)] transition active:scale-95 disabled:opacity-60"
-          >
-            {verifyBusy ? <Loader2 size={14} className="animate-spin" /> : hasVerifyPriority ? 'Extend' : 'Get it'}
-          </button>
-        </div>
-
-        <div className="card-elevated flex items-center gap-3 rounded-xl border border-accent/30 bg-accent/5 p-3.5">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
             <Search size={16} />
           </span>
           <div className="min-w-0 flex-1">
@@ -179,7 +135,7 @@ export default function Promote() {
             <p className="text-xs text-muted">
               {hasRequestPriority
                 ? `Active until ${new Date(currentUser.buyerRequestPriorityUntil!).toLocaleDateString()}`
-                : `See buyer requests before anyone else · ${formatPrice(BUYER_REQUEST_PRIORITY_FEE_PER_WEEK)}/wk`}
+                : `See buyer requests before anyone else · ${formatPrice(card.buyerRequestPriorityPerWeek)}/wk`}
             </p>
           </div>
           <button
@@ -231,7 +187,7 @@ export default function Promote() {
                   ) : (
                     <>
                       <Rocket size={12} />
-                      {l.sponsored ? `Until ${shortDate(l.sponsoredUntil!)}` : `Boost · ${formatPrice(BOOST_FEE_PER_WEEK)}/wk`}
+                      {l.sponsored ? `Until ${shortDate(l.sponsoredUntil!)}` : `Boost · ${formatPrice(card.boostPerWeek)}/wk`}
                     </>
                   )}
                 </button>
@@ -245,7 +201,7 @@ export default function Promote() {
                   ) : (
                     <>
                       <Star size={12} />
-                      {l.featured ? `Until ${shortDate(l.featuredUntil!)}` : `Feature · ${formatPrice(FEATURE_FEE_PER_WEEK)}/wk`}
+                      {l.featured ? `Until ${shortDate(l.featuredUntil!)}` : `Feature · ${formatPrice(card.featurePerWeek)}/wk`}
                     </>
                   )}
                 </button>
@@ -264,7 +220,7 @@ export default function Promote() {
                         <PinIcon size={12} />
                         {l.categoryPinned
                           ? `Until ${shortDate(l.categoryPinnedUntil!)}`
-                          : `Top of category · ${formatPrice(CATEGORY_PIN_FEE_PER_WEEK)}/wk`}
+                          : `Top of category · ${formatPrice(card.topOfCategoryPerWeek)}/wk`}
                       </>
                     )}
                   </button>
@@ -279,7 +235,7 @@ export default function Promote() {
                     ) : (
                       <>
                         <Megaphone size={12} />
-                        {l.banner ? `Until ${shortDate(l.bannerUntil!)}` : `Banner ad · ${formatPrice(BANNER_FEE_PER_WEEK)}/wk`}
+                        {l.banner ? `Until ${shortDate(l.bannerUntil!)}` : `Banner · ${formatPrice(card.bannerPerPeriod)}/${card.bannerPeriodDays} days`}
                       </>
                     )}
                   </button>

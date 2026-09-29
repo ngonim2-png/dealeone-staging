@@ -15,7 +15,6 @@ export async function isEligibleForStatus(userId: string): Promise<boolean> {
   const [user] = await db
     .select({
       isBusiness: users.isBusiness,
-      verificationPriorityUntil: users.verificationPriorityUntil,
       buyerRequestPriorityUntil: users.buyerRequestPriorityUntil,
     })
     .from(users)
@@ -24,7 +23,6 @@ export async function isEligibleForStatus(userId: string): Promise<boolean> {
   if (!user?.isBusiness) return false
 
   const now = new Date()
-  if (user.verificationPriorityUntil && user.verificationPriorityUntil > now) return true
   if (user.buyerRequestPriorityUntil && user.buyerRequestPriorityUntil > now) return true
 
   // Nullable `*Until` columns naturally fail a `gt(column, now)` comparison in SQL (NULL > x

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Bell, BellRing, Gift, Search, Tag, TrendingDown, CheckCheck, Smartphone } from 'lucide-react'
+import { Bell, BellRing, Clock, Gift, Search, Tag, TrendingDown, CheckCheck, Smartphone } from 'lucide-react'
 import BackHeader from '../components/BackHeader'
 import EmptyState from '../components/EmptyState'
 import { useApp } from '../context/AppContext'
@@ -15,6 +15,7 @@ const ICONS: Record<AppNotification['type'], typeof Bell> = {
   price_drop: TrendingDown,
   saved_search: Search,
   referral: Gift,
+  reminder: Clock,
   system: Bell,
 }
 

@@ -215,8 +215,48 @@ export const users = pgTable('users', {
   referredById: text('referred_by_id'),
   referralRewardedAt: timestamp('referral_rewarded_at', { withTimezone: true }),
   boostCredits: integer('boost_credits').notNull().default(0),
+  // Marketing consent: only people who ticked "Send me deals and updates" (at signup or in
+  // Settings) may be sent marketing messages or appear with a phone number in exports.
+  marketingOptIn: boolean('marketing_opt_in').notNull().default(false),
+  marketingOptInAt: timestamp('marketing_opt_in_at', { withTimezone: true }),
+  // Where this person came from: utm_source / campaign on the link they opened, or "agent"
+  // / "invite" when they used a field agent's or a friend's code.
+  signupSource: text('signup_source'),
+  signupCampaign: text('signup_campaign'),
+  // The field agent who signed them up (see fieldAgents), if any.
+  agentId: text('agent_id'),
+  // Updated at most hourly when the app talks to the API (lib/auth.ts) — powers "active
+  // users" in reports and who gets reminders.
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
+
+// Field sales agents. Each has a code (e.g. AG-FREE01) that new users type in the "invite
+// code" box at signup, so sign-ups — and later listings and promotion sales — are credited to
+// the right agent for commission. Agents don't need an app account.
+export const fieldAgents = pgTable('field_agents', {
+  id: text('id').primaryKey().$defaultFn(createId),
+  name: text('name').notNull(),
+  phone: text('phone'),
+  region: text('region'),
+  code: text('code').notNull().unique(),
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// One row per automatic reminder sent, so nobody gets the same nudge twice (see
+// lib/reminders.ts). refId is the listing/whatever the reminder was about ('' if none).
+export const reminderLog = pgTable(
+  'reminder_log',
+  {
+    id: text('id').primaryKey().$defaultFn(createId),
+    userId: text('user_id').notNull(),
+    kind: text('kind').notNull(),
+    refId: text('ref_id').notNull().default(''),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('reminder_log_unique_idx').on(t.userId, t.kind, t.refId)],
+)
 
 export const listings = pgTable(
   'listings',

@@ -7,7 +7,7 @@ import { isOnline, publish } from './live'
 import { sendPush } from './push'
 
 export interface NotifyInput {
-  type: 'offer' | 'offer_update' | 'price_drop' | 'saved_search' | 'referral' | 'system'
+  type: 'offer' | 'offer_update' | 'price_drop' | 'saved_search' | 'referral' | 'reminder' | 'system'
   title: string
   body?: string
   url?: string

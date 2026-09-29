@@ -148,6 +148,7 @@ export function mapCurrentUser(u: any): CurrentUser {
     verificationPriorityUntil: u.verificationPriorityUntil ?? undefined,
     buyerRequestPriorityUntil: u.buyerRequestPriorityUntil ?? undefined,
     role: u.role ?? 'user',
+    marketingOptIn: !!u.marketingOptIn,
   }
 }
 

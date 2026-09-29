@@ -29,6 +29,9 @@ import { savedSearchesRouter } from './routes/savedSearches'
 import { referralsRouter } from './routes/referrals'
 import { insightsRouter } from './routes/insights'
 import { assistRouter } from './routes/assist'
+import { rateCard } from './lib/billing'
+import { adminGrowthRouter, statsRouter } from './routes/growth'
+import { startReminderTimer } from './lib/reminders'
 import { notificationsRouter } from './routes/notifications'
 import { backfillMedia } from './lib/mediaBackfill'
 
@@ -50,6 +53,8 @@ app.use(express.json({ limit: '20mb' }))
 app.use(attachUser)
 
 app.get('/health', (_req, res) => res.json({ ok: true }))
+// Current prices, so the app never shows a stale price (see lib/billing.ts).
+app.get('/api/rate-card', (_req, res) => res.json(rateCard()))
 
 app.use('/api/auth', authRateLimit, authRouter)
 app.use('/api/users', usersRouter)
@@ -71,6 +76,8 @@ app.use('/api/saved-searches', savedSearchesRouter)
 app.use('/api/referrals', referralsRouter)
 app.use('/api/insights', insightsRouter)
 app.use('/api/assist', assistRouter)
+app.use('/api/admin/growth', adminGrowthRouter)
+app.use('/api/stats', statsRouter)
 app.use('/api/notifications', notificationsRouter)
 
 app.use((req, res) => {
@@ -105,4 +112,5 @@ const port = Number(process.env.PORT) || 4000
 app.listen(port, () => {
   console.log(`DEALEONE API listening on http://localhost:${port}`)
   backfillMedia().catch((err) => console.error('media backfill failed', err))
+  if (process.env.REMINDERS !== 'off') startReminderTimer()
 })

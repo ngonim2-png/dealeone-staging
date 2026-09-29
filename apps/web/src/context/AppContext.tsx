@@ -29,7 +29,7 @@ import type {
 } from '../types'
 import { distanceKm } from '../lib/geo'
 import { connectLive } from '../lib/live'
-import { clearStoredReferralCode, getStoredReferralCode } from '../lib/referral'
+import { clearStoredReferralCode, clearStoredSource, getStoredReferralCode, getStoredSource } from '../lib/referral'
 import { useToast } from '../components/Toast'
 import { api, ApiError, clearSessionToken, errorMessage, getSessionToken, isNetworkError, setSessionToken } from '../lib/api'
 import {
@@ -57,7 +57,8 @@ export interface NewListingInput {
   lat: number
   lng: number
   approxLocation: boolean
-  durationMonths: number
+  // Listing package: weeks paid up front (1, 2, 3 or 4 = "1 month"), NLe 25/week.
+  weeks: number
   images: string[]
   // Optional spoken description recorded in the Sell flow (data:audio/… URL).
   voiceNote?: string
@@ -131,7 +132,7 @@ interface AppContextValue {
   getEvent: (id: string | undefined) => DealeoneEvent | undefined
   loadEvent: (id: string) => Promise<void>
   checkPhone: (phone: string) => Promise<{ exists: boolean }>
-  signup: (phone: string, pin: string, referralCode?: string) => Promise<void>
+  signup: (phone: string, pin: string, referralCode?: string, marketingOptIn?: boolean) => Promise<void>
   login: (phone: string, pin: string) => Promise<void>
   completeProfile: (name: string) => Promise<void>
   logout: () => void
@@ -159,19 +160,17 @@ interface AppContextValue {
   // Toggles the current user's "interested/going" RSVP on an event — see EventDetail.tsx.
   toggleEventInterest: (eventId: string) => Promise<{ interested: boolean; interestedCount: number }>
   ensureEventConversation: (eventId: string) => Promise<string>
-  // Monetization: renewListing pays the recurring monthly listing fee (NLe 30, keeps the
-  // listing visible to buyers); boostListing/featureListing are the two weekly paid
-  // promotions (NLe 100 each — "Boosted" map/sort priority vs. a "Featured" card badge).
-  // All three are simulated charges (no real payment gateway yet) that always succeed —
-  // see apps/api/src/lib/billing.ts.
-  renewListing: (listingId: string) => Promise<Listing>
+  // Monetization (rate card, Sep 2026): renewListing pays NLe 25/week for 1–4 weeks to keep
+  // a listing visible; Boost NLe 50/wk, Featured NLe 25/wk, Top of category NLe 50/wk,
+  // banner NLe 100 per 10 days. All simulated charges until Monime is connected — see
+  // apps/api/src/lib/billing.ts.
+  renewListing: (listingId: string, weeks?: number) => Promise<Listing>
   // useCredit spends a free boost week earned from referrals instead of paying.
   boostListing: (listingId: string, useCredit?: boolean) => Promise<Listing>
   // Seller edits a published listing; a price cut alerts everyone who saved it.
   editListing: (listingId: string, input: EditListingInput) => Promise<Listing>
   featureListing: (listingId: string) => Promise<Listing>
-  // "Top Search Placement" (pin within category) and the Explore banner ad — the other two
-  // NLe 100/wk promotions that were only ever a suggestion until this round. Same
+  // "Top of category" (pin within category) and the home-screen banner ad — same
   // simulated-charge/paid-through-date pattern as boost/feature above.
   pinListingCategory: (listingId: string) => Promise<Listing>
   bannerListing: (listingId: string) => Promise<Listing>
@@ -189,10 +188,10 @@ interface AppContextValue {
   // Change the display name (account/Settings.tsx) — there was previously no way to fix a
   // typo'd name after signup.
   updateName: (name: string) => Promise<void>
-  // "Verified-seller fast-track" and "Buyer-Request priority access" (both NLe 100/wk,
-  // account-scoped rather than listing-scoped) — see account/Verification.tsx and
-  // account/BuyerRequestsFeed.tsx.
-  purchaseVerificationPriority: () => Promise<void>
+  // "Send me deals and updates" on/off (account/Settings.tsx).
+  updateMarketingOptIn: (value: boolean) => Promise<void>
+  // "Buyer-Request priority access" (NLe 50/wk, account-scoped) — see account/BuyerRequests.tsx.
+  // (The paid verification fast-track was removed: verification is free.)
   purchaseBuyerRequestPriority: () => Promise<void>
   sendMessage: (conversationId: string, text: string) => Promise<void>
   sendVoiceMessage: (conversationId: string, audioUrl: string, audioDurationSec: number) => Promise<void>
@@ -597,14 +596,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return api.post<{ exists: boolean }>('/api/auth/check', { phone })
   }, [])
 
-  const signup = useCallback(async (phone: string, pin: string, referralCode?: string) => {
+  const signup = useCallback(async (phone: string, pin: string, referralCode?: string, marketingOptIn = false) => {
     const code = (referralCode ?? getStoredReferralCode() ?? '').trim().toUpperCase()
+    const src = getStoredSource()
     const res = await api.post<{ token: string; user: any; isNewUser: boolean }>('/api/auth/signup', {
       phone,
       pin,
+      marketingOptIn,
       ...(code ? { referralCode: code } : {}),
+      ...(src ? { source: src.source, ...(src.campaign ? { campaign: src.campaign } : {}) } : {}),
     })
     clearStoredReferralCode()
+    clearStoredSource()
     // Token is stored right away — a brand-new user still needs an authenticated request
     // (PATCH /api/users/me) to complete their profile in the next step (see completeProfile
     // below), so activateSession is deliberately NOT called yet.
@@ -792,8 +795,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const renewListing = useCallback(
-    async (listingId: string) => {
-      const res = await api.post<{ listing: any }>(`/api/listings/${listingId}/renew`, {})
+    async (listingId: string, weeks = 1) => {
+      const res = await api.post<{ listing: any }>(`/api/listings/${listingId}/renew`, { weeks })
       const listing = mapListing(res.listing)
       patchListing(listing)
       return listing
@@ -883,8 +886,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [mergeSellers],
   )
 
-  const purchaseVerificationPriority = useCallback(async () => {
-    const res = await api.post<{ user: any }>('/api/verification-requests/priority', {})
+  const updateMarketingOptIn = useCallback(async (value: boolean) => {
+    const res = await api.patch<{ user: any }>('/api/users/me', { marketingOptIn: value })
     setCurrentUser(mapCurrentUser(res.user))
   }, [])
 
@@ -1281,7 +1284,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     submitRating,
     updateBusinessProfile,
     updateName,
-    purchaseVerificationPriority,
+    updateMarketingOptIn,
     purchaseBuyerRequestPriority,
     sendMessage,
     sendVoiceMessage,

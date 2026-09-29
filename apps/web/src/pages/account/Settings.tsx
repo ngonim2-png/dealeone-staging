@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Briefcase, CircleCheck, Gauge, Languages, Trash2, UserRound } from 'lucide-react'
+import { Briefcase, CircleCheck, Gauge, Languages, Megaphone, Trash2, UserRound } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import { useApp } from '../../context/AppContext'
 import { ApiError } from '../../lib/api'
@@ -10,7 +10,8 @@ import { LANGS, setLang, useLang, useT } from '../../lib/i18n'
 // gates the Explore banner ad (routes/listings.ts's POST /:id/banner-ad) and buyer-request
 // priority-access (routes/buyerRequests.ts's POST /priority-access) purchases.
 export default function Settings() {
-  const { currentUser, updateBusinessProfile, updateName, deleteAccount, lowData, setLowData } = useApp()
+  const { currentUser, updateBusinessProfile, updateName, deleteAccount, lowData, setLowData, updateMarketingOptIn } = useApp()
+  const [optInBusy, setOptInBusy] = useState(false)
   const lang = useLang()
   const t = useT()
   const [name, setName] = useState(currentUser?.name ?? '')
@@ -166,6 +167,44 @@ export default function Settings() {
         <div className="card-elevated rounded-xl bg-surface p-4">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-2 text-accent">
+              <Megaphone size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p id="optin-label" className="text-sm font-medium text-ink">Deals and updates</p>
+              <p className="text-xs text-muted">Occasional SMS or WhatsApp messages about deals near you and new features.</p>
+            </div>
+            <button
+              onClick={async () => {
+                if (!currentUser) return
+                setOptInBusy(true)
+                try {
+                  await updateMarketingOptIn(!currentUser.marketingOptIn)
+                } catch {
+                  // the switch simply stays where it was
+                } finally {
+                  setOptInBusy(false)
+                }
+              }}
+              disabled={optInBusy}
+              role="switch"
+              aria-checked={!!currentUser?.marketingOptIn}
+              aria-labelledby="optin-label"
+              className={`tap-flash relative h-7 w-12 shrink-0 rounded-full transition-colors before:absolute before:-inset-2.5 before:content-[''] disabled:opacity-60 ${
+                currentUser?.marketingOptIn ? 'bg-accent' : 'bg-[#c3ccc4]'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+                  currentUser?.marketingOptIn ? 'translate-x-[1.375rem]' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+
+        <div className="card-elevated rounded-xl bg-surface p-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-2 text-accent">
               <Gauge size={16} />
             </span>
             <div className="min-w-0 flex-1">
@@ -200,7 +239,7 @@ export default function Settings() {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-ink">Business account</p>
               <p className="text-xs text-muted">
-                Unlocks the Explore banner ad and buyer-request priority access (both NLe 100/wk).
+                Unlocks home-screen banner ads (NLe 100 per 10 days) and buyer-request priority access (NLe 50/week).
               </p>
             </div>
             <button

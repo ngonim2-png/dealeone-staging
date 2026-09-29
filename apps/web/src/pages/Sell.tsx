@@ -14,14 +14,11 @@ import { errorMessage } from '../lib/api'
 import { useT } from '../lib/i18n'
 import { CategoryHint, DescriptionPrompts, PhotoAssist, PriceGuideCard } from '../components/ListingHelp'
 import { VoiceNoteRecorder } from '../components/VoiceNote'
+import ListingPackagePicker from '../components/ListingPackagePicker'
+import { listingsAreFree, useRateCard } from '../lib/rateCard'
 
 const STEPS = ['Photos', 'Details', 'Location', 'Publish']
 const MAX_PHOTOS = 3
-// Recurring monthly fee, not a one-time payment — "Pay & Publish" only ever charges the
-// first month; every month after that has to be renewed from My Listings (see
-// account/MyListings.tsx) or the listing is hidden from buyers until it is. See
-// apps/api/src/lib/billing.ts for the matching backend constant.
-const LISTING_FEE_PER_MONTH = 30
 
 export default function Sell() {
   const toast = useToast()
@@ -42,7 +39,10 @@ export default function Sell() {
   const t = useT()
 
   const [approxLocation, setApproxLocation] = useState(true)
-  const [duration, setDuration] = useState(3)
+  const [weeks, setWeeks] = useState(1)
+  const card = useRateCard()
+  const freeNow = listingsAreFree(card)
+  const fee = freeNow ? 0 : (card.listingPackages.find((p) => p.weeks === weeks)?.price ?? card.listingFeePerWeek * weeks)
   const [publishing, setPublishing] = useState(false)
   const [publishedId, setPublishedId] = useState<string | null>(null)
 
@@ -70,7 +70,7 @@ export default function Sell() {
         lat: userLocation.lat + (userLocation.status === 'live' ? 0 : (Math.random() - 0.5) * 0.01),
         lng: userLocation.lng + (userLocation.status === 'live' ? 0 : (Math.random() - 0.5) * 0.01),
         approxLocation,
-        durationMonths: duration,
+        weeks,
         images: filledPhotos.length > 0 ? filledPhotos : [CATEGORY_META[category].emoji],
         ...(voiceNote ? { voiceNote } : {}),
       })
@@ -290,34 +290,22 @@ export default function Sell() {
             </div>
 
             <div>
-              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
-                Listing duration (max time it can run)
-              </p>
-              <div className="flex gap-2">
-                {[1, 3, 6].map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setDuration(m)}
-                    className={`tap-flash flex-1 rounded-xl py-2 text-xs font-medium transition active:scale-95 ${
-                      duration === m ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
-                    }`}
-                  >
-                    {m} {m === 1 ? 'month' : 'months'}
-                  </button>
-                ))}
-              </div>
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">How long to list it</p>
+              <ListingPackagePicker card={card} weeks={weeks} onChange={setWeeks} />
             </div>
 
             <div className="card-elevated rounded-xl bg-surface p-3 text-sm">
               <div className="flex items-center justify-between">
                 <span className="text-muted">Listing fee</span>
-                <span className="font-semibold text-ink">{formatPrice(LISTING_FEE_PER_MONTH)}/month</span>
+                <span className="font-semibold text-ink">
+                  {freeNow ? 'Free for now' : `${formatPrice(card.listingFeePerWeek)} a week`}
+                </span>
               </div>
               <p className="mt-1 text-xs text-muted">
-                Charged monthly to keep your listing visible to buyers. Today's payment covers your
-                first month — renew from My Listings each month after that (up to {duration}{' '}
-                {duration === 1 ? 'month' : 'months'} total). Boost and Featured upgrades are
-                available from My Listings after publishing.
+                {freeNow
+                  ? `Listing is free during our launch, until ${new Date(card.freeListingsUntil!).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}. After that it's ${formatPrice(card.listingFeePerWeek)} a week.`
+                  : 'Your listing stays visible to buyers for the time you pay for. Renew any time from My Listings.'}{' '}
+                Boost and Featured are available from My Listings after publishing.
               </p>
             </div>
 
@@ -331,7 +319,7 @@ export default function Sell() {
                   <Loader2 size={15} className="animate-spin" /> Processing…
                 </>
               ) : (
-                `Pay ${formatPrice(LISTING_FEE_PER_MONTH)} & Publish`
+                fee > 0 ? `Pay ${formatPrice(fee)} & Publish` : 'Publish'
               )}
             </button>
           </div>

@@ -7,13 +7,14 @@ import { categoryEnum, conditionEnum, listingPayments, listingStatusEnum, listin
 import { distanceKmExpr, presentListing, safeCoord } from '../lib/geo'
 import { requireAuth } from '../lib/auth'
 import {
-  addMonths,
   addWeeks,
-  BANNER_FEE_PER_WEEK,
+  addDays,
+  BANNER_FEE_PER_PERIOD,
+  BANNER_PERIOD_DAYS,
   BOOST_FEE_PER_WEEK,
   CATEGORY_PIN_FEE_PER_WEEK,
   FEATURE_FEE_PER_WEEK,
-  LISTING_FEE_PER_MONTH,
+  listingFee,
   sweepBilling,
 } from '../lib/billing'
 import { normalizeImages } from '../lib/media'
@@ -343,7 +344,11 @@ const createListingSchema = z.object({
   lat: z.number().finite().min(-90).max(90),
   lng: z.number().finite().min(-180).max(180),
   approxLocation: z.boolean().default(true),
-  durationMonths: z.number().int().positive().max(12).default(3),
+  // Listing package: how many weeks to pay for now (1, 2, 3 or 4 = "1 month").
+  weeks: z.number().int().min(1).max(4).default(1),
+  // Old clients sent a 1/3/6-month duration; accepted and ignored — a listing now stays
+  // live for as long as it's paid up.
+  durationMonths: z.number().int().positive().max(12).optional(),
   // Each entry is either a short emoji placeholder (seed/demo data, or the category-emoji
   // fallback when a listing has no real photo) or a compressed base64 data URL from the
   // Sell flow's camera/gallery capture (see apps/web/src/lib/media.ts) — capped here so a
@@ -368,8 +373,8 @@ listingsRouter.post('/', requireAuth, async (req, res) => {
   }
   const d = parsed.data
   const now = new Date()
-  const expiresAt = addMonths(now, d.durationMonths)
-  const feePaidUntil = addMonths(now, 1)
+  const feePaidUntil = addWeeks(now, d.weeks)
+  const expiresAt = feePaidUntil
 
   const [created] = await db
     .insert(listings)
@@ -399,7 +404,7 @@ listingsRouter.post('/', requireAuth, async (req, res) => {
     listingId: created.id,
     sellerId: req.userId!,
     kind: 'listing_fee',
-    amount: LISTING_FEE_PER_MONTH,
+    amount: listingFee(d.weeks, now),
     periodStart: now,
     periodEnd: feePaidUntil,
   })
@@ -473,12 +478,17 @@ listingsRouter.post('/:id/renew', requireAuth, async (req, res) => {
     res.status(409).json({ error: `A ${existing.status} listing can't be renewed.` })
     return
   }
+  const weeksParsed = z.object({ weeks: z.number().int().min(1).max(4).default(1) }).safeParse(req.body ?? {})
+  if (!weeksParsed.success) {
+    res.status(400).json({ error: 'Choose 1, 2, 3 or 4 weeks.' })
+    return
+  }
+  const weeks = weeksParsed.data.weeks
   const now = new Date()
   const base = existing.feePaidUntil > now ? existing.feePaidUntil : now
-  const feePaidUntil = addMonths(base, 1)
-  // Paying for another month also keeps the listing within its lifetime cap for that
-  // month — otherwise the billing sweep (which now enforces expiresAt) would re-expire a
-  // freshly renewed listing whose original duration had run out.
+  const feePaidUntil = addWeeks(base, weeks)
+  // Paying for more weeks also extends the listing's lifetime cap — otherwise the billing
+  // sweep (which enforces expiresAt) would re-expire a freshly renewed listing.
   const expiresAt = existing.expiresAt > feePaidUntil ? existing.expiresAt : feePaidUntil
 
   const [updated] = await db
@@ -496,7 +506,7 @@ listingsRouter.post('/:id/renew', requireAuth, async (req, res) => {
     listingId: existing.id,
     sellerId: req.userId!,
     kind: 'listing_fee',
-    amount: LISTING_FEE_PER_MONTH,
+    amount: listingFee(weeks, now),
     periodStart: base,
     periodEnd: feePaidUntil,
   })
@@ -633,7 +643,7 @@ listingsRouter.post('/:id/banner-ad', requireAuth, async (req, res) => {
   }
   const now = new Date()
   const base = existing.bannerUntil && existing.bannerUntil > now ? existing.bannerUntil : now
-  const bannerUntil = addWeeks(base, 1)
+  const bannerUntil = addDays(base, BANNER_PERIOD_DAYS)
 
   const [updated] = await db
     .update(listings)
@@ -645,7 +655,7 @@ listingsRouter.post('/:id/banner-ad', requireAuth, async (req, res) => {
     listingId: existing.id,
     sellerId: req.userId!,
     kind: 'banner_ad',
-    amount: BANNER_FEE_PER_WEEK,
+    amount: BANNER_FEE_PER_PERIOD,
     periodStart: base,
     periodEnd: bannerUntil,
   })

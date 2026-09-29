@@ -2,10 +2,8 @@ import { Router } from 'express'
 import { and, desc, eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/client'
-import { listingPayments, users, verificationRequests } from '../db/schema'
+import { users, verificationRequests } from '../db/schema'
 import { requireAuth } from '../lib/auth'
-import { addWeeks, VERIFICATION_PRIORITY_FEE_PER_WEEK } from '../lib/billing'
-import { omitPinHash } from '../lib/sanitize'
 
 export const verificationRequestsRouter = Router()
 
@@ -77,29 +75,8 @@ verificationRequestsRouter.get('/me', requireAuth, async (req, res) => {
 // active gets `priority: true` and sorts to the front of the admin review queue (see
 // admin.ts's GET /verification-requests). Unlike the listing-scoped upgrades in
 // routes/listings.ts, this lives on the user, so it has no listingId in the ledger.
-verificationRequestsRouter.post('/priority', requireAuth, async (req, res) => {
-  const [me] = await db.select().from(users).where(eq(users.id, req.userId!)).limit(1)
-  if (!me) {
-    res.status(404).json({ error: 'User not found' })
-    return
-  }
-  const now = new Date()
-  const base = me.verificationPriorityUntil && me.verificationPriorityUntil > now ? me.verificationPriorityUntil : now
-  const verificationPriorityUntil = addWeeks(base, 1)
-
-  const [updated] = await db
-    .update(users)
-    .set({ verificationPriorityUntil })
-    .where(eq(users.id, req.userId!))
-    .returning()
-
-  await db.insert(listingPayments).values({
-    sellerId: req.userId!,
-    kind: 'verification_priority',
-    amount: VERIFICATION_PRIORITY_FEE_PER_WEEK,
-    periodStart: base,
-    periodEnd: verificationPriorityUntil,
-  })
-
-  res.json({ user: omitPinHash(updated) })
+verificationRequestsRouter.post('/priority', requireAuth, (_req, res) => {
+  // The paid verification fast-track was removed with the Sep 2026 rate card —
+  // verification is free and reviewed in the order requests arrive.
+  res.status(410).json({ error: 'Verification is now free and reviewed in order — there is no fast-track to buy.' })
 })

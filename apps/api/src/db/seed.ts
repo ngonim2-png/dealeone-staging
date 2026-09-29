@@ -21,8 +21,7 @@ import {
   statusViews,
   users,
   verificationRequests,
-  wishlistEntries,
-} from './schema'
+  wishlistEntries, reminderLog, fieldAgents } from './schema'
 import { jitterCoordinate } from '../lib/geo'
 import { hashPin } from '../lib/pin'
 import { backfillMedia } from '../lib/mediaBackfill'
@@ -113,7 +112,9 @@ async function main() {
   await db.delete(notifications)
   await db.delete(pushSubscriptions)
   await db.delete(savedSearches)
+  await db.delete(reminderLog)
   await db.delete(users)
+  await db.delete(fieldAgents)
 
   const [me] = await db
     .insert(users)

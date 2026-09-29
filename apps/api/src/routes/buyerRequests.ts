@@ -61,7 +61,7 @@ buyerRequestsRouter.post('/', requireAuth, async (req, res) => {
 // read the free-text `product` description themselves to judge relevance, same as spec's
 // original reverse-marketplace framing.
 //
-// "Buyer-Request priority access" (NLe 100/week, business accounts only, POST
+// "Buyer-Request priority access" (NLe 50/week, business accounts only, POST
 // /priority-access below): by default this feed hides anything posted in the last 24
 // hours, so paying sellers see brand-new requests immediately while everyone else sees them
 // a day later — a real (if simple) early-access mechanic, not just a label.
@@ -149,7 +149,7 @@ buyerRequestsRouter.post('/:id/respond', requireAuth, async (req, res) => {
   res.json({ conversationId: convo.id })
 })
 
-// "Buyer-Request priority access" purchase (NLe 100/week, business accounts only — an
+// "Buyer-Request priority access" purchase (NLe 50/week, business accounts only — an
 // individual buyer occasionally posting one request doesn't need to pay to see other
 // buyers' requests faster; this is aimed at businesses actively sourcing inventory).
 buyerRequestsRouter.post('/priority-access', requireAuth, async (req, res) => {

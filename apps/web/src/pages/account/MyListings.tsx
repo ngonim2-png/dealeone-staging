@@ -12,16 +12,12 @@ import { mapListing } from '../../lib/mappers'
 import { formatPrice } from '../../lib/format'
 import { useToast } from '../../components/Toast'
 import LoadError from '../../components/LoadError'
+import ListingPackagePicker from '../../components/ListingPackagePicker'
+import { listingsAreFree, useRateCard } from '../../lib/rateCard'
 
-// Kept in sync with apps/api/src/lib/billing.ts's constants — shown here purely for
-// copy/button labels, the real charge (simulated — no payment gateway yet) happens
-// server-side in the renew/boost/feature/pin-category/banner-ad routes, which are the
-// actual source of truth.
-const LISTING_FEE_PER_MONTH = 30
-const BOOST_FEE_PER_WEEK = 100
-const FEATURE_FEE_PER_WEEK = 100
-const CATEGORY_PIN_FEE_PER_WEEK = 100
-const BANNER_FEE_PER_WEEK = 100
+// Prices come from the API's rate card (GET /api/rate-card, see lib/rateCard.ts); the real
+// charge (simulated until Monime is connected) happens server-side in the renew/boost/
+// feature/pin-category/banner-ad routes.
 
 function shortDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -51,6 +47,10 @@ export default function MyListings() {
   const [loadFailed, setLoadFailed] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const [busy, setBusy] = useState<Record<string, ActionKind | undefined>>({})
+  const card = useRateCard()
+  const freeNow = listingsAreFree(card)
+  // Renewal package chosen per listing (defaults to 1 week).
+  const [renewWeeks, setRenewWeeks] = useState<Record<string, number>>({})
   const navigate = useNavigate()
   // Free boost weeks earned by inviting friends (see account/Invite.tsx) — spent before paying.
   const [boostCredits, setBoostCredits] = useState(0)
@@ -171,18 +171,18 @@ export default function MyListings() {
               label: 'Boost',
               icon: Rocket,
               activeUntil: l.sponsored ? l.sponsoredUntil : undefined,
-              price: BOOST_FEE_PER_WEEK,
+              price: card.boostPerWeek,
               run: boostCredits > 0 ? boostWithCredit : (id) => boostListing(id),
               hint: boostCredits > 0 ? `Free week · ${boostCredits} left` : undefined,
             },
-            { kind: 'feature', label: 'Feature', icon: Star, activeUntil: l.featured ? l.featuredUntil : undefined, price: FEATURE_FEE_PER_WEEK, run: featureListing },
-            { kind: 'pin', label: 'Top of category', icon: MapPin, activeUntil: l.categoryPinned ? l.categoryPinnedUntil : undefined, price: CATEGORY_PIN_FEE_PER_WEEK, run: pinListingCategory },
+            { kind: 'feature', label: 'Feature', icon: Star, activeUntil: l.featured ? l.featuredUntil : undefined, price: card.featurePerWeek, run: featureListing },
+            { kind: 'pin', label: 'Top of category', icon: MapPin, activeUntil: l.categoryPinned ? l.categoryPinnedUntil : undefined, price: card.topOfCategoryPerWeek, run: pinListingCategory },
             {
               kind: 'banner',
               label: 'Banner ad',
               icon: Megaphone,
               activeUntil: l.banner ? l.bannerUntil : undefined,
-              price: BANNER_FEE_PER_WEEK,
+              price: card.bannerPerPeriod,
               run: bannerListing,
               hint: currentUser?.isBusiness ? undefined : 'Business accounts only',
             },
@@ -192,29 +192,45 @@ export default function MyListings() {
               <ListingCard listing={l} />
               {(l.status === 'active' || l.status === 'expired') && (
                 <div className="card-elevated space-y-3 rounded-2xl bg-surface p-3">
-                  {/* Monthly fee: status + the one action that matters for it. */}
-                  <div className="flex items-center justify-between gap-3">
+                  {/* Listing fee: when it's paid until, and renewing for 1–4 weeks. */}
+                  <div className="space-y-2">
                     <p className={`text-xs leading-snug ${l.status === 'expired' ? 'font-medium text-bad' : 'text-muted'}`}>
                       {l.status === 'expired'
                         ? `Hidden from buyers — fee unpaid since ${shortDate(l.feePaidUntil)}`
                         : `Listing fee paid until ${shortDate(l.feePaidUntil)}`}
                     </p>
-                    <button
-                      onClick={() => runAction(l.id, 'renew', renewListing)}
-                      disabled={isBusy}
-                      className={`tap-flash flex min-h-10 shrink-0 items-center justify-center gap-1 rounded-full px-4 text-xs font-semibold transition active:scale-95 disabled:opacity-60 ${
-                        l.status === 'expired'
-                          ? 'bg-gradient-to-b from-accent-2 to-accent text-white'
-                          : 'bg-surface-2 text-ink'
-                      }`}
-                    >
-                      {busy[l.id] === 'renew' ? <Loader2 size={14} className="animate-spin" /> : `Renew · ${formatPrice(LISTING_FEE_PER_MONTH)}`}
-                    </button>
+                    <div className="space-y-2">
+                      <div>
+                        <ListingPackagePicker
+                          card={card}
+                          compact
+                          weeks={(renewWeeks[l.id] ?? 1)}
+                          onChange={(w) => setRenewWeeks((prev) => ({ ...prev, [l.id]: w }))}
+                        />
+                      </div>
+                      <button
+                        onClick={() => runAction(l.id, 'renew', (id) => renewListing(id, (renewWeeks[l.id] ?? 1)))}
+                        disabled={isBusy}
+                        className={`tap-flash flex min-h-11 w-full items-center justify-center gap-1 rounded-full px-4 text-sm font-semibold transition active:scale-95 disabled:opacity-60 ${
+                          l.status === 'expired'
+                            ? 'bg-gradient-to-b from-accent-2 to-accent text-white'
+                            : 'bg-surface-2 text-ink'
+                        }`}
+                      >
+                        {busy[l.id] === 'renew' ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : freeNow ? (
+                          'Renew'
+                        ) : (
+                          `Renew · ${formatPrice(card.listingFeePerWeek * (renewWeeks[l.id] ?? 1))}`
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   {l.status === 'active' && (
                     <div>
-                      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">Promote · per week</p>
+                      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">Promote</p>
                       <div className="grid grid-cols-2 gap-2">
                         {promos.map((p) => {
                           const Icon = p.icon
@@ -239,7 +255,7 @@ export default function MyListings() {
                                     ? p.hint
                                     : on
                                       ? `Active until ${shortDate(p.activeUntil!)} · extend`
-                                      : p.hint ?? formatPrice(p.price)}
+                                      : p.hint ?? `${formatPrice(p.price)} / ${p.kind === 'banner' ? `${card.bannerPeriodDays} days` : 'week'}`}
                                 </span>
                               </span>
                             </button>

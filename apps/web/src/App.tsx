@@ -38,6 +38,7 @@ const AdminDisputes = lazy(() => import('./pages/admin/AdminDisputes'))
 const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
 const AdminListings = lazy(() => import('./pages/admin/AdminListings'))
 const AdminVerification = lazy(() => import('./pages/admin/AdminVerification'))
+const AdminGrowth = lazy(() => import('./pages/admin/AdminGrowth'))
 
 // Gate for every /admin/* route — Account.tsx only ever links here for an admin, but a
 // non-admin could still type the URL directly, so this is the actual enforcement point
@@ -148,6 +149,14 @@ function App() {
             element={
               <AdminRoute>
                 <AdminListings />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/admin/growth"
+            element={
+              <AdminRoute>
+                <AdminGrowth />
               </AdminRoute>
             }
           />

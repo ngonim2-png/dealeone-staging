@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, Check, Clock, Loader2, Lock, X, Zap } from 'lucide-react'
+import { Camera, Check, Clock, Lock, X } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import { useApp } from '../../context/AppContext'
-import { api, errorMessage } from '../../lib/api'
+import { api } from '../../lib/api'
 import { compressImageFile } from '../../lib/media'
-import { formatPrice } from '../../lib/format'
 import type { VerificationLevel } from '../../types'
 import { VERIFICATION_LABELS } from '../../types'
-import { useToast } from '../../components/Toast'
 
 const DESCRIPTIONS: Record<VerificationLevel, string> = {
   0: 'Not started.',
@@ -16,8 +14,6 @@ const DESCRIPTIONS: Record<VerificationLevel, string> = {
   3: 'Complete your first successful sale and seller history review.',
   4: 'Register documentation for your business to unlock storefronts and advertising.',
 }
-
-const VERIFICATION_PRIORITY_FEE_PER_WEEK = 100
 
 interface VerificationRequestRow {
   id: string
@@ -31,15 +27,13 @@ interface VerificationRequestRow {
 // had no onClick handler at all. Submits to routes/verificationRequests.ts's POST /, which an
 // admin then reviews from Admin > Verification (mirrors the reports/disputes pattern).
 export default function Verification() {
-  const toast = useToast()
-  const { currentUser, purchaseVerificationPriority } = useApp()
+  const { currentUser } = useApp()
   const [requests, setRequests] = useState<VerificationRequestRow[] | null>(null)
   const [sheetLevel, setSheetLevel] = useState<VerificationLevel | null>(null)
   const [note, setNote] = useState('')
   const [photo, setPhoto] = useState<string | undefined>(undefined)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [priorityBusy, setPriorityBusy] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const loadRequests = () => {
@@ -60,7 +54,6 @@ export default function Verification() {
 
   const levels: VerificationLevel[] = [1, 2, 3, 4]
   const pendingRequest = requests?.find((r) => r.status === 'pending')
-  const hasPriority = !!(currentUser.verificationPriorityUntil && new Date(currentUser.verificationPriorityUntil) > new Date())
 
   const openSheet = (lvl: VerificationLevel) => {
     setSheetLevel(lvl)
@@ -93,18 +86,6 @@ export default function Verification() {
     }
   }
 
-  const buyPriority = async () => {
-    setPriorityBusy(true)
-    try {
-      await purchaseVerificationPriority()
-    } catch (err) {
-      console.error('purchase verification priority failed', err)
-      toast.error(errorMessage(err, 'Could not complete that payment — please try again.'))
-    } finally {
-      setPriorityBusy(false)
-    }
-  }
-
   return (
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="Verification" />
@@ -114,26 +95,9 @@ export default function Verification() {
           features and appear as a trust badge on your listings.
         </p>
 
-        <div className="card-elevated flex items-center gap-3 rounded-xl border border-accent/30 bg-accent/5 p-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
-            <Zap size={16} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-ink">Verified-seller fast-track</p>
-            <p className="text-xs text-muted">
-              {hasPriority
-                ? `Active until ${new Date(currentUser.verificationPriorityUntil!).toLocaleDateString()}`
-                : `Jump to the front of the admin review queue · ${formatPrice(VERIFICATION_PRIORITY_FEE_PER_WEEK)}/wk`}
-            </p>
-          </div>
-          <button
-            onClick={buyPriority}
-            disabled={priorityBusy}
-            className="tap-flash flex min-h-10 min-w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-accent-2 to-accent px-4 text-xs font-semibold text-white shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)] transition active:scale-95 disabled:opacity-60"
-          >
-            {priorityBusy ? <Loader2 size={14} className="animate-spin" /> : hasPriority ? 'Extend' : 'Get it'}
-          </button>
-        </div>
+        <p className="flex items-center gap-2 rounded-xl bg-good/[0.08] px-3 py-2 text-xs text-ink/80">
+          <Check size={14} className="shrink-0 text-good" /> Verification is free. Requests are reviewed in the order they arrive.
+        </p>
 
         {levels.map((lvl, i) => {
           const done = currentUser.verificationLevel >= lvl

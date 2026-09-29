@@ -1,8 +1,9 @@
 import { useNavigate } from 'react-router-dom'
-import { Flag, ShieldAlert, ShieldCheck, Users, ListChecks, ChevronRight } from 'lucide-react'
+import { Flag, ShieldAlert, ShieldCheck, Users, ListChecks, ChevronRight, TrendingUp } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 
 const TILES = [
+  { icon: TrendingUp, label: 'Growth', hint: 'Weekly numbers, data downloads, field agents', to: '/admin/growth' },
   { icon: Flag, label: 'Reports', hint: 'Scam or fraud reports awaiting review', to: '/admin/reports' },
   { icon: ShieldAlert, label: 'Disputes', hint: 'Buyer/seller deals gone wrong', to: '/admin/disputes' },
   { icon: ShieldCheck, label: 'Verification', hint: 'Seller verification requests awaiting review', to: '/admin/verification' },
