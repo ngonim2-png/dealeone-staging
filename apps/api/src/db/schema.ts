@@ -15,6 +15,7 @@ import {
   uniqueIndex,
   index,
   jsonb,
+  customType,
 } from 'drizzle-orm/pg-core'
 import { createId } from './cuid'
 
@@ -206,6 +207,14 @@ export const users = pgTable('users', {
   // in a brand-new signup, since phone gets replaced with a `deleted-<id>` placeholder that
   // will never collide with a real one.
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  // Referral rewards: each user gets a short invite code; a user who signed up with
+  // someone's code records it in referredById. When a referred user publishes their first
+  // listing, the referrer earns a free week of Boost (boostCredits) — referralRewardedAt on
+  // the *referred* user makes that a one-time reward.
+  referralCode: text('referral_code').unique(),
+  referredById: text('referred_by_id'),
+  referralRewardedAt: timestamp('referral_rewarded_at', { withTimezone: true }),
+  boostCredits: integer('boost_credits').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -274,6 +283,9 @@ export const listings = pgTable(
     banner: boolean('banner').notNull().default(false),
     bannerUntil: timestamp('banner_until', { withTimezone: true }),
     images: text('images').array().notNull().default([]),
+    // Optional spoken description (a voice note) — for sellers and buyers who'd rather
+    // talk than type. Stored as media like every other recording.
+    voiceNoteUrl: text('voice_note_url'),
     dealOriginalPrice: integer('deal_original_price'),
     dealValidUntil: timestamp('deal_valid_until', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -658,4 +670,123 @@ export const statusViews = pgTable(
     viewedAt: timestamp('viewed_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('status_views_status_viewer_idx').on(t.statusId, t.viewerId)],
+)
+
+// Binary column for stored media (see media table below).
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea'
+  },
+})
+
+// Photos and voice notes, stored once and served by URL (/api/media/:id) with long-lived
+// caching — instead of as base64 text inside listing/event/status/message rows, which made
+// every listings feed carry every full-size photo (a 20-listing feed with 3 photos each was
+// ~16 MB). Images are re-encoded to WebP (max 1280px) and get a small thumbnail generated
+// server-side for cards and map pins. Kept in Postgres for now so there's nothing extra to
+// set up; lib/media.ts is the only place that knows where bytes live, so moving to S3/R2
+// object storage later is a change there, not across the app.
+export const media = pgTable(
+  'media',
+  {
+    id: text('id').primaryKey().$defaultFn(createId),
+    ownerId: text('owner_id').references(() => users.id),
+    kind: text('kind').notNull(), // 'image' | 'audio'
+    mime: text('mime').notNull(),
+    data: bytea('data').notNull(),
+    thumb: bytea('thumb'),
+    thumbMime: text('thumb_mime'),
+    width: integer('width'),
+    height: integer('height'),
+    bytes: integer('bytes').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('media_owner_idx').on(t.ownerId)],
+)
+
+// Small key/value store for server-owned settings that must survive restarts — e.g. the
+// VAPID key pair for phone push notifications, generated once on first start (lib/push.ts).
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+})
+
+// In-app notifications (the bell): offer received/accepted/declined/countered, price drops
+// on saved items, new matches for saved searches, referral rewards. Chat messages have their
+// own unread counts in Messages and aren't duplicated here.
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: text('id').primaryKey().$defaultFn(createId),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    type: text('type').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull().default(''),
+    url: text('url'),
+    read: boolean('read').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('notifications_user_created_idx').on(t.userId, t.createdAt)],
+)
+
+// A phone/browser that agreed to receive push notifications (Web Push). One user can
+// have several (phone + tablet). Dead subscriptions are removed when the push service
+// reports them gone.
+export const pushSubscriptions = pgTable(
+  'push_subscriptions',
+  {
+    id: text('id').primaryKey().$defaultFn(createId),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    endpoint: text('endpoint').notNull(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('push_subscriptions_endpoint_idx').on(t.endpoint), index('push_subscriptions_user_idx').on(t.userId)],
+)
+
+// "Tell me when…" — a saved search. New listings that match within the radius notify
+// the owner (bell + push).
+export const savedSearches = pgTable(
+  'saved_searches',
+  {
+    id: text('id').primaryKey().$defaultFn(createId),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id),
+    query: text('query').notNull().default(''),
+    categories: text('categories').array().notNull().default([]),
+    maxPrice: integer('max_price'),
+    radiusKm: doublePrecision('radius_km').notNull().default(5),
+    lat: doublePrecision('lat').notNull(),
+    lng: doublePrecision('lng').notNull(),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
+  },
+  (t) => [index('saved_searches_user_idx').on(t.userId), index('saved_searches_active_idx').on(t.active)],
+)
+
+// One row per (listing, viewer, day) — counted views for the seller insights dashboard,
+// without one person refreshing a page inflating the number.
+export const listingViews = pgTable(
+  'listing_views',
+  {
+    id: text('id').primaryKey().$defaultFn(createId),
+    listingId: text('listing_id')
+      .notNull()
+      .references(() => listings.id, { onDelete: 'cascade' }),
+    viewerKey: text('viewer_key').notNull(),
+    day: text('day').notNull(), // YYYY-MM-DD (UTC)
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('listing_views_unique_idx').on(t.listingId, t.viewerKey, t.day),
+    index('listing_views_listing_idx').on(t.listingId, t.createdAt),
+  ],
 )

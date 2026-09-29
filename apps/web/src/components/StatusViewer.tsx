@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { X, Trash2, Flag, BadgeCheck } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import ReportSheet from './ReportSheet'
-import { timeAgo } from '../lib/format'
+import { relativeTime } from '../lib/format'
+import { mediaSrc } from '../lib/media'
 
 const SLIDE_MS = 5000
 
@@ -41,18 +42,22 @@ export default function StatusViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id])
 
+  // Auto-advance — paused while the report sheet (or a delete) is in progress, so a report
+  // is always filed against the status the person was actually looking at, and the viewer
+  // can't close underneath the sheet mid-report.
+  const paused = reportOpen || deleting
   useEffect(() => {
-    if (!current) return
+    if (!current || paused) return
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      setIndex((i) => (i < statuses.length - 1 ? i + 1 : i))
       if (index >= statuses.length - 1) onClose()
+      else setIndex(index + 1)
     }, SLIDE_MS)
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id, statuses.length])
+  }, [current?.id, statuses.length, paused, index])
 
   if (!userId || !group || !poster || !current) return null
 
@@ -75,7 +80,7 @@ export default function StatusViewer({
   }
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col bg-black">
+    <div className="fixed inset-0 z-[60] flex flex-col bg-black pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <div className="flex gap-1 px-3 pt-3">
         {statuses.map((s, i) => (
           <div key={s.id} className="h-1 flex-1 overflow-hidden rounded-full bg-white/25">
@@ -100,7 +105,7 @@ export default function StatusViewer({
               <p className="truncate text-sm font-medium text-white">{poster.name}</p>
               {poster.verificationLevel >= 3 && <BadgeCheck size={12} className="shrink-0 text-good" />}
             </div>
-            <p className="text-[11px] text-white/60">{timeAgo(current.createdAt)} ago</p>
+            <p className="text-[11px] text-white/60">{relativeTime(current.createdAt)}</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -133,7 +138,7 @@ export default function StatusViewer({
       </div>
 
       <div className="relative flex-1">
-        <img src={current.imageUrl} alt="" className="h-full w-full object-contain" />
+        <img src={mediaSrc(current.imageUrl)} alt="" className="h-full w-full object-contain" />
         <button aria-label="Previous" onClick={goPrev} className="absolute inset-y-0 left-0 w-1/3" />
         <button aria-label="Next" onClick={goNext} className="absolute inset-y-0 right-0 w-2/3" />
       </div>

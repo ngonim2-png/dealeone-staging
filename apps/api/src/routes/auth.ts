@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
+import { ipLoginBlocked, recordIpFailure } from '../lib/rateLimit'
 import { db } from '../db/client'
 import { users } from '../db/schema'
 import { hashPin, verifyPinHash } from '../lib/pin'
@@ -8,6 +9,7 @@ import { clearAttempts, lockedUntil, recordFailedAttempt } from '../lib/pinAttem
 import { signSession } from '../lib/jwt'
 import { omitPinHash } from '../lib/sanitize'
 
+import { referrerForCode } from '../lib/referrals'
 export const authRouter = Router()
 
 // Phone + self-chosen 4-digit PIN — replaces the earlier phone-OTP flow (spec §45/§30). No
@@ -43,7 +45,12 @@ authRouter.post('/check', async (req, res) => {
   res.json({ exists: !!user })
 })
 
-const signupSchema = z.object({ phone: z.string().min(6), pin: pinSchema })
+const signupSchema = z.object({
+  phone: z.string().min(6),
+  pin: pinSchema,
+  // Optional invite code (from a friend's link or typed in) — see lib/referrals.ts.
+  referralCode: z.string().trim().max(20).optional(),
+})
 
 authRouter.post('/signup', async (req, res) => {
   const parsed = signupSchema.safeParse(req.body)
@@ -51,7 +58,7 @@ authRouter.post('/signup', async (req, res) => {
     res.status(400).json({ error: parsed.error.flatten() })
     return
   }
-  const { phone, pin } = parsed.data
+  const { phone, pin, referralCode } = parsed.data
 
   const [existing] = await db.select().from(users).where(eq(users.phone, phone)).limit(1)
   if (existing) {
@@ -67,6 +74,7 @@ authRouter.post('/signup', async (req, res) => {
       location: 'Freetown',
       pinHash: hashPin(pin),
       verificationLevel: 1, // phone provided, per spec §30 Level 1 — see note above re: OTP
+      referredById: await referrerForCode(referralCode),
     })
     .returning()
 
@@ -84,6 +92,11 @@ authRouter.post('/login', async (req, res) => {
   }
   const { phone, pin } = parsed.data
 
+  if (ipLoginBlocked(req.ip)) {
+    res.status(429).json({ error: 'Too many incorrect PIN attempts from this device. Try again in 15 minutes.' })
+    return
+  }
+
   const locked = lockoutResponse(phone)
   if (locked) {
     res.status(423).json({
@@ -95,6 +108,7 @@ authRouter.post('/login', async (req, res) => {
   const [user] = await db.select().from(users).where(eq(users.phone, phone)).limit(1)
   if (!user || !verifyPinHash(pin, user.pinHash)) {
     recordFailedAttempt(phone)
+    recordIpFailure(req.ip)
     res.status(401).json({ error: 'Incorrect phone number or PIN.' })
     return
   }

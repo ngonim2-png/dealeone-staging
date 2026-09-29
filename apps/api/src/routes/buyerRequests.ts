@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { and, desc, eq, lt, ne } from 'drizzle-orm'
+import { and, desc, eq, lt, ne, gt } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/client'
 import { buyerRequests, conversations, listingPayments, listings, messages, users } from '../db/schema'
@@ -7,6 +7,7 @@ import { requireAuth } from '../lib/auth'
 import { ensureConversation } from '../lib/conversations'
 import { addWeeks, BUYER_REQUEST_PRIORITY_FEE_PER_WEEK } from '../lib/billing'
 import { omitPinHash } from '../lib/sanitize'
+import { announceMessage } from '../lib/chatEvents'
 
 export const buyerRequestsRouter = Router()
 
@@ -81,6 +82,7 @@ buyerRequestsRouter.get('/feed', requireAuth, async (req, res) => {
       and(
         ne(buyerRequests.userId, req.userId!),
         eq(buyerRequests.status, 'open'),
+        gt(buyerRequests.expiresAt, new Date()), // expired requests used to stay in the feed forever
         hasPriority ? undefined : lt(buyerRequests.createdAt, oneDayAgo),
       ),
     )
@@ -119,13 +121,22 @@ buyerRequestsRouter.post('/:id/respond', requireAuth, async (req, res) => {
     res.status(403).json({ error: 'You can only respond with your own listing.' })
     return
   }
+  if (listing.status !== 'active') {
+    res.status(409).json({ error: 'Respond with a listing that is currently active.' })
+    return
+  }
+  if (request.expiresAt < new Date() || request.status === 'expired') {
+    res.status(409).json({ error: 'This request is no longer open.' })
+    return
+  }
 
   const convo = await ensureConversation(request.userId, listing.id)
   const text = parsed.data.message?.trim()
     ? parsed.data.message.trim()
     : `Responding to your request for "${request.product}" — check out my listing "${listing.title}".`
-  await db.insert(messages).values({ conversationId: convo.id, senderId: req.userId!, type: 'text', text })
+  const [respMsg] = await db.insert(messages).values({ conversationId: convo.id, senderId: req.userId!, type: 'text', text }).returning()
   await db.update(conversations).set({ lastMessageAt: new Date() }).where(eq(conversations.id, convo.id))
+  announceMessage(convo, respMsg)
 
   await db
     .update(buyerRequests)

@@ -65,6 +65,7 @@ export function mapListing(l: any): Listing {
     banner: l.banner,
     bannerUntil: l.bannerUntil ?? undefined,
     images: l.images ?? [],
+    voiceNoteUrl: l.voiceNoteUrl ?? undefined,
     dealOriginalPrice: l.dealOriginalPrice ?? undefined,
     dealValidUntil: l.dealValidUntil ?? undefined,
   }

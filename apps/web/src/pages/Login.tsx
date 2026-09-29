@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { useApp } from '../context/AppContext'
 import { ApiError } from '../lib/api'
 import logoMark from '../assets/logo-mark.png'
+import { getStoredReferralCode } from '../lib/referral'
 
 type Step = 'phone' | 'pin-login' | 'pin-create' | 'name'
 
@@ -13,31 +14,28 @@ type Step = 'phone' | 'pin-login' | 'pin-create' | 'name'
  * in, the device just stays signed in (see AppContext's stored JWT) — no re-verifying on
  * every open, matching how WhatsApp and most chat apps behave on a trusted device. */
 export default function Login() {
-  const { checkPhone, signup, login, completeProfile } = useApp()
-  const [step, setStep] = useState<Step>('phone')
+  const { checkPhone, signup, login, completeProfile, needsProfile } = useApp()
+  // A signup that was interrupted before the name step resumes right there.
+  const [step, setStep] = useState<Step>(needsProfile ? 'name' : 'phone')
   const [phone, setPhone] = useState('')
   const [pin, setPin] = useState('')
   const [newPin, setNewPin] = useState('')
   const [confirmPin, setConfirmPin] = useState('')
   const [name, setName] = useState('')
+  // Pre-filled when they arrived through a friend's invite link (see lib/referral.ts).
+  const [inviteCode, setInviteCode] = useState(() => getStoredReferralCode() ?? '')
+  const [showInvite, setShowInvite] = useState(() => !!getStoredReferralCode())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const friendlyError = (err: unknown, fallback: string) => {
-    if (err instanceof ApiError) {
-      try {
-        const parsed = JSON.parse(err.message)
-        if (typeof parsed === 'string') return parsed
-      } catch {
-        // not JSON — fall through
-      }
-    }
-    return fallback
-  }
+  // lib/api.ts already turns every API error into one readable sentence.
+  const friendlyError = (err: unknown, fallback: string) =>
+    err instanceof ApiError && err.message ? err.message : fallback
 
   const digitsOnly = (v: string) => v.replace(/\D/g, '').slice(0, 4)
 
   const continueFromPhone = async () => {
+    if (loading) return
     const trimmed = phone.trim()
     if (!trimmed) return
     setLoading(true)
@@ -56,6 +54,7 @@ export default function Login() {
   }
 
   const submitLogin = async () => {
+    if (loading) return
     if (pin.length < 4) return
     setLoading(true)
     setError(null)
@@ -71,6 +70,7 @@ export default function Login() {
   }
 
   const submitSignup = async () => {
+    if (loading) return
     if (newPin.length < 4 || confirmPin.length < 4) return
     if (newPin !== confirmPin) {
       setError("Those PINs don't match — try again.")
@@ -79,7 +79,7 @@ export default function Login() {
     setLoading(true)
     setError(null)
     try {
-      await signup(phone.trim(), newPin)
+      await signup(phone.trim(), newPin, inviteCode.trim() || undefined)
       setStep('name')
     } catch (err) {
       setError(friendlyError(err, "Couldn't create your account — try again."))
@@ -89,6 +89,7 @@ export default function Login() {
   }
 
   const finishProfile = async () => {
+    if (loading) return
     const trimmed = name.trim()
     if (!trimmed) return
     setLoading(true)
@@ -208,6 +209,20 @@ export default function Login() {
               placeholder="Confirm PIN"
               className="mt-2 w-full rounded-xl border border-border bg-surface-2 px-4 py-3 text-center text-lg tracking-[0.5em] text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
             />
+            {showInvite ? (
+              <input
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12))}
+                placeholder="Invite code (optional)"
+                aria-label="Invite code"
+                autoCapitalize="characters"
+                className="mt-2 w-full rounded-xl border border-border bg-surface-2 px-4 py-2.5 text-center text-sm uppercase tracking-widest text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
+              />
+            ) : (
+              <button type="button" onClick={() => setShowInvite(true)} className="mt-2 w-full py-1.5 text-xs font-medium text-accent">
+                Have an invite code?
+              </button>
+            )}
             {error && <p className="mt-2 text-left text-xs text-bad">{error}</p>}
             <button
               onClick={submitSignup}

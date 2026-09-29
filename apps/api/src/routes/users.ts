@@ -1,18 +1,20 @@
 import { Router } from 'express'
-import { and, desc, eq, ne } from 'drizzle-orm'
+import { and, desc, eq, inArray, ne } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/client'
 import {
+  buyerRequests,
   events,
   listingPayments,
   listings,
+  offers,
   statuses,
   users,
   verificationRequests,
   wishlistEntries,
 } from '../db/schema'
 import { requireAuth } from '../lib/auth'
-import { omitPinHash } from '../lib/sanitize'
+import { omitPinHash, publicUser } from '../lib/sanitize'
 import { verifyPinHash } from '../lib/pin'
 
 export const usersRouter = Router()
@@ -145,6 +147,13 @@ usersRouter.delete('/me', requireAuth, async (req, res) => {
 
     // Wishlist entries are private to this user alone — safe to remove outright.
     await tx.delete(wishlistEntries).where(eq(wishlistEntries.userId, u.id))
+    // A deleted account shouldn't keep asking sellers for things or leave open offers a
+    // seller could still "accept" with nobody on the other end.
+    await tx.update(buyerRequests).set({ status: 'expired' }).where(eq(buyerRequests.userId, u.id))
+    await tx
+      .update(offers)
+      .set({ status: 'rejected' })
+      .where(and(eq(offers.buyerId, u.id), inArray(offers.status, ['pending', 'countered'])))
   })
 
   res.json({ ok: true })
@@ -178,5 +187,9 @@ usersRouter.get('/:id', async (req, res) => {
     .select({ id: listings.id })
     .from(listings)
     .where(eq(listings.sellerId, u.id))
-  res.json({ user: omitPinHash(u), listingsCount: sellerListings.length })
+  // Public profile: only what any buyer needs to judge a seller. Previously this returned
+  // the whole row (minus the PIN hash) to anyone, logged in or not — phone number, role,
+  // suspension flag, paid-priority windows — and seller ids are in every listing response,
+  // so every user's phone number was one request away (and with it, PIN guessing).
+  res.json({ user: publicUser(u), listingsCount: sellerListings.length })
 })

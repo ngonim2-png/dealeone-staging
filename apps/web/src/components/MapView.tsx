@@ -4,9 +4,10 @@ import { useEffect, useRef } from 'react'
 import type { Listing } from '../types'
 import { USER_LOCATION } from '../lib/geo'
 import type { LiveLocation } from '../lib/useLiveLocation'
-import { isImageUrl } from '../lib/media'
 import { categorySvg } from '../lib/categoryIcons'
 import 'leaflet/dist/leaflet.css'
+import { mediaSrc } from '../lib/media'
+import { useApp } from '../context/AppContext'
 
 function userIcon() {
   // Lime "you are here" dot (ties to the logo's own bright-green accent) with a white ring
@@ -24,7 +25,11 @@ function userIcon() {
 // quieter "premium" cue than the old dark-on-dark treatment needed), and the active/selected
 // pin gets the one bright fill in the whole map — a lime gradient — so it's unmistakably the
 // "hot" pin at a glance, the same job gold did on the old dark basemap.
-function pinIcon(listing: Listing, active: boolean) {
+function escapeHtml(v: string): string {
+  return v.replace(/[&<>"'`]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' })[c]!)
+}
+
+function pinIcon(listing: Listing, active: boolean, lowData = false) {
   const { category, sponsored, title } = listing
   const image = listing.images[0]
   const bg = active ? 'linear-gradient(180deg, #a6e64b, #84d61c)' : '#ffffff'
@@ -40,11 +45,18 @@ function pinIcon(listing: Listing, active: boolean) {
   // A real listing photo fills the badge as a cropped circular thumbnail; otherwise a
   // category glyph (not emoji — reads cleaner at this size, matches the reference style).
   const glyph = categorySvg(category, 15, iconColor)
-  const content = isImageUrl(image)
-    ? `<img src="${image}" style="width:100%;height:100%;object-fit:cover;border-radius:9999px;" />`
+  // Leaflet divIcons are raw HTML strings, so anything user-supplied (the title, the photo
+  // value) MUST be escaped — an unescaped title or image string was a stored-XSS hole that
+  // ran a seller's script on every map it appeared on. Only real photo data URLs are used
+  // as <img> sources here; anything else falls back to the category glyph.
+  // Stored photos use the small thumbnail (~10-20 KB) — a map can show dozens of pins.
+  const isStored = !lowData && typeof image === 'string' && /^\/api\/media\/[0-9a-f-]{36}$/.test(image)
+  const isInline = !lowData && typeof image === 'string' && /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image)
+  const content = isStored || isInline
+    ? `<img src="${escapeHtml(isStored ? mediaSrc(image, 'thumb') : image)}" alt="" loading="lazy" style="width:100%;height:100%;object-fit:cover;border-radius:9999px;" />`
     : glyph
 
-  const label = title.length > 18 ? `${title.slice(0, 17)}…` : title
+  const label = escapeHtml(title.length > 18 ? `${title.slice(0, 17)}…` : title)
 
   return divIcon({
     className: '',
@@ -144,6 +156,7 @@ export default function MapView({
   recenterTrigger?: number
   userLocation: LiveLocation
 }) {
+  const { lowData } = useApp()
   // Tracks whether we've already auto-recentered for this "GPS just resolved" moment, so
   // RecenterOnRadius's effect only jumps to the live position once on its own — after that,
   // the user is free to pan away without the map fighting them on every GPS tick.
@@ -183,7 +196,7 @@ export default function MapView({
         <Marker
           key={l.id}
           position={[l.lat, l.lng]}
-          icon={pinIcon(l, l.id === selectedId)}
+          icon={pinIcon(l, l.id === selectedId, lowData)}
           eventHandlers={{ click: () => onSelect(l.id) }}
         />
       ))}

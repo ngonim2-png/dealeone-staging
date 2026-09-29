@@ -1,15 +1,21 @@
 import { useState } from 'react'
-import { Briefcase, CircleCheck, Trash2 } from 'lucide-react'
+import { Briefcase, CircleCheck, Gauge, Languages, Trash2, UserRound } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import { useApp } from '../../context/AppContext'
 import { ApiError } from '../../lib/api'
+import { LANGS, setLang, useLang, useT } from '../../lib/i18n'
 
 // The real business-account toggle — before this round `isBusiness` existed in the DB/API
 // but a real user could never actually set it themselves (seed-data only). This is what
 // gates the Explore banner ad (routes/listings.ts's POST /:id/banner-ad) and buyer-request
 // priority-access (routes/buyerRequests.ts's POST /priority-access) purchases.
 export default function Settings() {
-  const { currentUser, updateBusinessProfile, deleteAccount } = useApp()
+  const { currentUser, updateBusinessProfile, updateName, deleteAccount, lowData, setLowData } = useApp()
+  const lang = useLang()
+  const t = useT()
+  const [name, setName] = useState(currentUser?.name ?? '')
+  const [nameState, setNameState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [nameError, setNameError] = useState<string | null>(null)
   const [isBusiness, setIsBusiness] = useState(currentUser?.isBusiness ?? false)
   const [businessName, setBusinessName] = useState(currentUser?.businessName ?? '')
   const [saving, setSaving] = useState(false)
@@ -27,17 +33,9 @@ export default function Settings() {
 
   if (!currentUser) return null
 
-  const friendlyError = (err: unknown, fallback: string) => {
-    if (err instanceof ApiError) {
-      try {
-        const parsed = JSON.parse(err.message)
-        if (typeof parsed === 'string') return parsed
-      } catch {
-        // not JSON — fall through
-      }
-    }
-    return fallback
-  }
+  // lib/api.ts already turns every API error into one readable sentence.
+  const friendlyError = (err: unknown, fallback: string) =>
+    err instanceof ApiError && err.message ? err.message : fallback
 
   const confirmDelete = async () => {
     if (!/^\d{4}$/.test(deletePin)) {
@@ -72,16 +70,128 @@ export default function Settings() {
       setSaved(true)
     } catch (err) {
       console.error('update business profile failed', err)
-      setError("Couldn't save — try again.")
+      setError(friendlyError(err, "Couldn't save — please try again."))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const nameDirty = name.trim() !== currentUser.name
+  const saveName = async () => {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      setNameError('Enter your name.')
+      return
+    }
+    setNameState('saving')
+    setNameError(null)
+    try {
+      await updateName(trimmed)
+      setNameState('saved')
+    } catch (err) {
+      setNameState('error')
+      setNameError(friendlyError(err, "Couldn't save your name — please try again."))
     }
   }
 
   return (
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="Settings" />
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+      <div className="mx-auto w-full max-w-xl flex-1 space-y-4 overflow-y-auto px-4 py-4">
+        <div className="card-elevated space-y-3 rounded-xl bg-surface p-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-2 text-accent">
+              <UserRound size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <label htmlFor="settings-name" className="text-sm font-medium text-ink">
+                Your name
+              </label>
+              <p className="text-xs text-muted">Shown to buyers and sellers you chat with.</p>
+            </div>
+          </div>
+          <input
+            id="settings-name"
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value)
+              setNameState('idle')
+            }}
+            maxLength={80}
+            autoComplete="name"
+            className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
+          />
+          {nameError && <p className="text-xs text-bad">{nameError}</p>}
+          {nameState === 'saved' && !nameDirty && (
+            <p className="flex items-center gap-1 text-xs text-good">
+              <CircleCheck size={13} /> Saved
+            </p>
+          )}
+          <button
+            onClick={saveName}
+            disabled={!nameDirty || nameState === 'saving'}
+            className="btn-primary min-h-11 w-full py-2.5 text-sm disabled:opacity-50"
+          >
+            {nameState === 'saving' ? 'Saving…' : 'Save name'}
+          </button>
+        </div>
+
+        <div className="card-elevated rounded-xl bg-surface p-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-2 text-accent">
+              <Languages size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-ink">{t('settings.language')}</p>
+              <p className="text-xs text-muted">{t('settings.languageHint')}</p>
+            </div>
+          </div>
+          <div role="radiogroup" aria-label={t('settings.language')} className="mt-3 grid grid-cols-2 gap-2">
+            {LANGS.map((l) => (
+              <button
+                key={l.id}
+                role="radio"
+                aria-checked={lang === l.id}
+                onClick={() => setLang(l.id)}
+                className={`tap-flash min-h-11 rounded-xl text-sm font-medium transition active:scale-[0.97] ${
+                  lang === l.id ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
+                }`}
+              >
+                {l.native}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="card-elevated rounded-xl bg-surface p-4">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-2 text-accent">
+              <Gauge size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p id="lowdata-label" className="text-sm font-medium text-ink">Low-data mode</p>
+              <p className="text-xs text-muted">
+                Don't download photos until you tap them. Saves mobile data and loads faster on a weak signal.
+              </p>
+            </div>
+            <button
+              onClick={() => setLowData(!lowData)}
+              role="switch"
+              aria-checked={lowData}
+              aria-labelledby="lowdata-label"
+              className={`tap-flash relative h-7 w-12 shrink-0 rounded-full transition-colors before:absolute before:-inset-2.5 before:content-[''] ${
+                lowData ? 'bg-accent' : 'bg-[#c3ccc4]'
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+                  lowData ? 'translate-x-[1.375rem]' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+
         <div className="card-elevated space-y-3 rounded-xl bg-surface p-4">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-2 text-accent">
@@ -95,15 +205,16 @@ export default function Settings() {
             </div>
             <button
               onClick={() => setIsBusiness((v) => !v)}
-              aria-pressed={isBusiness}
-              aria-label="Toggle business account"
-              className={`tap-flash relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-                isBusiness ? 'bg-accent' : 'bg-surface-2'
+              aria-label="Business account"
+              role="switch"
+              aria-checked={isBusiness}
+              className={`tap-flash relative h-7 w-12 shrink-0 rounded-full transition-colors before:absolute before:-inset-2.5 before:content-[''] ${
+                isBusiness ? 'bg-accent' : 'bg-[#c3ccc4]'
               }`}
             >
               <span
-                className={`absolute top-0.5 h-5 w-5 rounded-full bg-bg shadow transition-transform ${
-                  isBusiness ? 'translate-x-5' : 'translate-x-0.5'
+                className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${
+                  isBusiness ? 'translate-x-[1.375rem]' : 'translate-x-0.5'
                 }`}
               />
             </button>
@@ -127,9 +238,9 @@ export default function Settings() {
           <button
             onClick={save}
             disabled={!dirty || saving}
-            className="btn-primary w-full py-2.5 text-sm disabled:opacity-50"
+            className="btn-primary min-h-11 w-full py-2.5 text-sm disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : 'Save business settings'}
           </button>
         </div>
 

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { ShieldAlert } from 'lucide-react'
+import { ShieldAlert, Loader2 } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { api } from '../../lib/api'
-import { timeAgo } from '../../lib/format'
+import { relativeTime } from '../../lib/format'
 import { DISPUTE_REASON_LABELS, type DisputeReason, type DisputeStatus } from '../../types'
+import LoadError from '../../components/LoadError'
 
 interface AdminDisputeRow {
   dispute: {
@@ -15,7 +16,7 @@ interface AdminDisputeRow {
     status: DisputeStatus
     createdAt: string
   }
-  listing: { id: string; title: string }
+  listing: { id: string; title: string } | null
   buyer: { id: string; name: string; phone: string } | null
   seller: { id: string; name: string; phone: string } | null
   raisedBy: { id: string; name: string; phone: string } | null
@@ -32,10 +33,12 @@ const STATUS_STYLE: Record<DisputeStatus, string> = {
 
 export default function AdminDisputes() {
   const [rows, setRows] = useState<AdminDisputeRow[] | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = () => {
-    api.get<{ disputes: AdminDisputeRow[] }>('/api/admin/disputes').then((res) => setRows(res.disputes))
+    setLoadError(false)
+    api.get<{ disputes: AdminDisputeRow[] }>('/api/admin/disputes').then((res) => setRows(res.disputes)).catch(() => setLoadError(true))
   }
 
   useEffect(load, [])
@@ -56,6 +59,12 @@ export default function AdminDisputes() {
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="Disputes" />
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {loadError && <LoadError onRetry={load} />}
+        {!rows && !loadError && (
+          <div className="flex justify-center py-10 text-muted">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        )}
         {rows && rows.length === 0 && (
           <EmptyState icon={ShieldAlert} title="No disputes" hint="Deals flagged as gone wrong will show up here." />
         )}
@@ -66,12 +75,12 @@ export default function AdminDisputes() {
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-ink">{DISPUTE_REASON_LABELS[dispute.reason]}</p>
-                  <p className="truncate text-xs text-muted">{listing.title}</p>
+                  <p className="truncate text-xs text-muted">{listing?.title ?? 'Event conversation'}</p>
                   <p className="text-xs text-muted">
                     Buyer: {buyer?.name ?? '—'} · Seller: {seller?.name ?? '—'}
                   </p>
                   <p className="text-xs text-muted">
-                    Raised by {raisedBy?.name ?? '—'} · {timeAgo(dispute.createdAt)} ago
+                    Raised by {raisedBy?.name ?? '—'} · {relativeTime(dispute.createdAt)}
                   </p>
                   {dispute.details && <p className="mt-1 text-xs text-ink">{dispute.details}</p>}
                 </div>

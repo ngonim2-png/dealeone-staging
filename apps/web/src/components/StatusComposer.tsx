@@ -68,7 +68,7 @@ export default function StatusComposer({ open, onClose }: { open: boolean; onClo
           <h2 className="flex items-center gap-2 text-xl font-display font-bold tracking-tight text-ink">
             <Sparkles size={17} className="text-accent" /> New status
           </h2>
-          <button onClick={close} className="icon-btn h-8 w-8 bg-surface-2">
+          <button onClick={close} aria-label="Close" className="icon-btn h-11 w-11 bg-surface-2">
             <X size={16} />
           </button>
         </div>

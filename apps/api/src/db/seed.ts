@@ -1,6 +1,11 @@
 import 'dotenv/config'
 import { db, pool } from './client'
 import {
+  media,
+  listingViews,
+  notifications,
+  pushSubscriptions,
+  savedSearches,
   buyerRequests,
   conversations,
   disputes,
@@ -20,6 +25,7 @@ import {
 } from './schema'
 import { jitterCoordinate } from '../lib/geo'
 import { hashPin } from '../lib/pin'
+import { backfillMedia } from '../lib/mediaBackfill'
 
 // Every seeded account (including the admin one) signs in with this same 4-digit PIN — see
 // the "phone + PIN" login round in the build log for why there's no OTP any more. One shared
@@ -100,7 +106,13 @@ async function main() {
   // users, so both have to go before the users wipe.
   await db.delete(statusViews)
   await db.delete(statuses)
+  await db.delete(listingViews)
   await db.delete(listings)
+  // References users — must go before them (see the wipe-order rule in the build log).
+  await db.delete(media)
+  await db.delete(notifications)
+  await db.delete(pushSubscriptions)
+  await db.delete(savedSearches)
   await db.delete(users)
 
   const [me] = await db
@@ -466,6 +478,9 @@ async function main() {
   // "me" has already seen star-pharmacy's status but not the other two posters' — gives
   // StatusRow.tsx a real all-viewed (muted ring) poster alongside real unviewed ones.
   await db.insert(statusViews).values([{ statusId: 'st3', viewerId: 'me' }])
+  // Seed status photos are generated as data URLs above — move them into media storage
+  // like every real upload.
+  await backfillMedia()
 
   console.log(
     `Seeded: 1 buyer + 1 admin + ${sellerSeeds.length} sellers, ${listingSeeds.length} listings, ${eventSeeds.length} events, 6 conversations, 4 offers, 3 buyer requests, 1 report, 1 dispute, 1 verification request, ${statusSeeds.length} statuses.`,

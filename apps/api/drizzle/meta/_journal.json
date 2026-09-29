@@ -71,6 +71,20 @@
       "when": 1790004077906,
       "tag": "0009_reflective_groot",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790618294832,
+      "tag": "0010_workable_rachel_grey",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790619089763,
+      "tag": "0011_chief_silverclaw",
+      "breakpoints": true
     }
   ]
 }

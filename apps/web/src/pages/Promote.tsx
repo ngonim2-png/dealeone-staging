@@ -10,6 +10,8 @@ import { ApiError, api } from '../lib/api'
 import { mapListing } from '../lib/mappers'
 import { formatPrice } from '../lib/format'
 import type { Listing } from '../types'
+import { useToast } from '../components/Toast'
+import LoadError from '../components/LoadError'
 
 // New bottom-nav tab that centralizes every paid-promotion action that already existed
 // scattered across Account (My Listings' boost/feature/pin/banner buttons, Verification's
@@ -30,6 +32,7 @@ function shortDate(iso: string) {
 type ActionKind = 'boost' | 'feature' | 'pin' | 'banner'
 
 export default function Promote() {
+  const toast = useToast()
   const navigate = useNavigate()
   const {
     currentUser,
@@ -42,6 +45,8 @@ export default function Promote() {
   } = useApp()
   const [mine, setMine] = useState<Listing[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [busy, setBusy] = useState<Record<string, ActionKind | undefined>>({})
   const [verifyBusy, setVerifyBusy] = useState(false)
   const [requestBusy, setRequestBusy] = useState(false)
@@ -50,6 +55,7 @@ export default function Promote() {
     if (!currentUser) return
     let cancelled = false
     setLoading(true)
+    setLoadFailed(false)
     api
       .get<{ results: { listing: any }[] }>(
         `/api/listings?sellerId=${currentUser.id}&status=active,expired&radiusKm=25000`,
@@ -58,12 +64,15 @@ export default function Promote() {
         if (cancelled) return
         setMine(res.results.map((r) => mapListing(r.listing)))
       })
-      .catch((err) => console.error('failed to load my listings', err))
+      .catch((err) => {
+        console.error('failed to load my listings', err)
+        if (!cancelled) setLoadFailed(true)
+      })
       .finally(() => !cancelled && setLoading(false))
     return () => {
       cancelled = true
     }
-  }, [currentUser])
+  }, [currentUser, reloadKey])
 
   if (!currentUser) return null // App.tsx only renders this route once bootstrap is ready
 
@@ -74,18 +83,9 @@ export default function Promote() {
     currentUser.buyerRequestPriorityUntil && new Date(currentUser.buyerRequestPriorityUntil) > new Date()
   )
 
-  const describeError = (err: unknown) => {
-    if (err instanceof ApiError) {
-      try {
-        const parsed = JSON.parse(err.message)
-        if (typeof parsed === 'string') return parsed
-      } catch {
-        // not JSON — fall through to the raw message
-      }
-      return err.message
-    }
-    return 'Could not complete that action — check the API server is running and try again.'
-  }
+  const describeError = (err: unknown) =>
+    err instanceof ApiError && err.message ? err.message : 'Could not complete that action — please try again.'
+
 
   const runAction = async (listingId: string, kind: ActionKind, action: (id: string) => Promise<Listing>) => {
     setBusy((b) => ({ ...b, [listingId]: kind }))
@@ -94,7 +94,7 @@ export default function Promote() {
       setMine((prev) => prev.map((l) => (l.id === updated.id ? updated : l)))
     } catch (err) {
       console.error(`${kind} failed`, err)
-      alert(describeError(err))
+      toast.error(describeError(err))
     } finally {
       setBusy((b) => ({ ...b, [listingId]: undefined }))
     }
@@ -106,7 +106,7 @@ export default function Promote() {
       await purchaseVerificationPriority()
     } catch (err) {
       console.error('purchase verification priority failed', err)
-      alert(describeError(err))
+      toast.error(describeError(err))
     } finally {
       setVerifyBusy(false)
     }
@@ -118,7 +118,7 @@ export default function Promote() {
       await purchaseBuyerRequestPriority()
     } catch (err) {
       console.error('purchase buyer request priority failed', err)
-      alert(describeError(err))
+      toast.error(describeError(err))
     } finally {
       setRequestBusy(false)
     }
@@ -164,9 +164,9 @@ export default function Promote() {
           <button
             onClick={buyVerifyPriority}
             disabled={verifyBusy}
-            className="tap-flash shrink-0 rounded-full bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-accent transition active:scale-95 disabled:opacity-60"
+            className="tap-flash flex min-h-10 min-w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-accent-2 to-accent px-4 text-xs font-semibold text-white shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)] transition active:scale-95 disabled:opacity-60"
           >
-            {verifyBusy ? <Loader2 size={12} className="animate-spin" /> : hasVerifyPriority ? 'Extend' : 'Buy'}
+            {verifyBusy ? <Loader2 size={14} className="animate-spin" /> : hasVerifyPriority ? 'Extend' : 'Get it'}
           </button>
         </div>
 
@@ -185,9 +185,9 @@ export default function Promote() {
           <button
             onClick={buyRequestPriority}
             disabled={requestBusy}
-            className="tap-flash shrink-0 rounded-full bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-accent transition active:scale-95 disabled:opacity-60"
+            className="tap-flash flex min-h-10 min-w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-accent-2 to-accent px-4 text-xs font-semibold text-white shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)] transition active:scale-95 disabled:opacity-60"
           >
-            {requestBusy ? <Loader2 size={12} className="animate-spin" /> : hasRequestPriority ? 'Extend' : 'Buy'}
+            {requestBusy ? <Loader2 size={14} className="animate-spin" /> : hasRequestPriority ? 'Extend' : 'Get it'}
           </button>
         </div>
 
@@ -202,7 +202,8 @@ export default function Promote() {
           </div>
         )}
 
-        {!loading && mine.length === 0 && (
+        {loadFailed && <LoadError onRetry={() => setReloadKey((k) => k + 1)} />}
+        {!loading && !loadFailed && mine.length === 0 && (
           <EmptyState
             icon={Rocket}
             title="Nothing to promote yet"
@@ -223,7 +224,7 @@ export default function Promote() {
                 <button
                   onClick={() => runAction(l.id, 'boost', boostListing)}
                   disabled={!!busy[l.id] || l.status === 'expired'}
-                  className="tap-flash flex flex-1 items-center justify-center gap-1 rounded-lg bg-surface-2 py-1.5 font-medium text-muted transition active:scale-95 disabled:opacity-60"
+                  className="tap-flash flex min-h-10 flex-1 items-center justify-center gap-1 rounded-xl bg-surface-2 px-2 py-2 font-medium text-muted transition active:scale-95 disabled:opacity-60"
                 >
                   {busy[l.id] === 'boost' ? (
                     <Loader2 size={12} className="animate-spin" />
@@ -237,7 +238,7 @@ export default function Promote() {
                 <button
                   onClick={() => runAction(l.id, 'feature', featureListing)}
                   disabled={!!busy[l.id] || l.status === 'expired'}
-                  className="tap-flash flex flex-1 items-center justify-center gap-1 rounded-lg bg-surface-2 py-1.5 font-medium text-muted transition active:scale-95 disabled:opacity-60"
+                  className="tap-flash flex min-h-10 flex-1 items-center justify-center gap-1 rounded-xl bg-surface-2 px-2 py-2 font-medium text-muted transition active:scale-95 disabled:opacity-60"
                 >
                   {busy[l.id] === 'feature' ? (
                     <Loader2 size={12} className="animate-spin" />
@@ -254,7 +255,7 @@ export default function Promote() {
                   <button
                     onClick={() => runAction(l.id, 'pin', pinListingCategory)}
                     disabled={!!busy[l.id]}
-                    className="tap-flash flex flex-1 items-center justify-center gap-1 rounded-lg bg-surface-2 py-1.5 font-medium text-muted transition active:scale-95 disabled:opacity-60"
+                    className="tap-flash flex min-h-10 flex-1 items-center justify-center gap-1 rounded-xl bg-surface-2 px-2 py-2 font-medium text-muted transition active:scale-95 disabled:opacity-60"
                   >
                     {busy[l.id] === 'pin' ? (
                       <Loader2 size={12} className="animate-spin" />
@@ -270,7 +271,7 @@ export default function Promote() {
                   <button
                     onClick={() => runAction(l.id, 'banner', bannerListing)}
                     disabled={!!busy[l.id] || !currentUser.isBusiness}
-                    className="tap-flash flex flex-1 items-center justify-center gap-1 rounded-lg bg-surface-2 py-1.5 font-medium text-muted transition active:scale-95 disabled:opacity-60"
+                    className="tap-flash flex min-h-10 flex-1 items-center justify-center gap-1 rounded-xl bg-surface-2 px-2 py-2 font-medium text-muted transition active:scale-95 disabled:opacity-60"
                     title={currentUser.isBusiness ? undefined : 'Business accounts only — see Account > Settings'}
                   >
                     {busy[l.id] === 'banner' ? (

@@ -1,19 +1,28 @@
-// Real photo capture/upload for listings (Sell flow) — replaces the old mock where "taking a
-// photo" just meant picking an emoji from a catalog. Listing images are still just
-// `text[]` in Postgres (see schema.ts), so a captured photo is stored as a compressed
-// base64 data URL string, same MVP-storage tradeoff as voice notes (no object storage in
-// the stack yet — fine at demo scale, worth moving to real object storage before heavy
-// real-world traffic).
+// Photo capture/compression for the Sell/Host/Status flows, plus helpers for showing
+// stored media. Photos are uploaded once as a compressed data URL; the API stores them in
+// its media table and hands back a short URL ("/api/media/<id>") — the listing feed only
+// ever carries those URLs, never the photo bytes.
+import { BASE_URL } from './api'
 
-/** True for a real captured/uploaded photo (data/blob/http URL) as opposed to the emoji
- * placeholder strings seed/demo data still uses for `images[0]` — every place that renders
- * a listing thumbnail needs to tell these apart so old demo listings keep showing their
- * emoji instead of trying to render it as a broken <img>. */
+/** True for a real photo (a stored media URL, or a data/blob/http URL still being edited)
+ * as opposed to the emoji placeholder strings seed/demo data uses for `images[0]`. */
 export function isImageUrl(value: string | undefined | null): value is string {
   if (!value) return false
   return (
-    value.startsWith('data:image') || value.startsWith('http://') || value.startsWith('https://') || value.startsWith('blob:')
+    value.startsWith('/api/media/') ||
+    value.startsWith('data:image') ||
+    value.startsWith('http://') ||
+    value.startsWith('https://') ||
+    value.startsWith('blob:')
   )
+}
+
+/** Browser-usable URL for a stored photo/voice note. `thumb` gets the small (≈360px, ~10-20 KB)
+ * version for cards and map pins; detail views use the full size. Non-media values (data
+ * URLs being edited) pass through unchanged. */
+export function mediaSrc(value: string, size: 'full' | 'thumb' = 'full'): string {
+  if (value.startsWith('/api/media/')) return `${BASE_URL}${value}${size === 'thumb' ? '?size=thumb' : ''}`
+  return value
 }
 
 const MAX_DIMENSION = 1280

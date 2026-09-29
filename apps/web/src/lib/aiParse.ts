@@ -9,7 +9,7 @@ export interface ParsedQuery {
   keywords: string[]
 }
 
-const CATEGORY_KEYWORDS: Record<Category, string[]> = {
+export const CATEGORY_KEYWORDS: Record<Category, string[]> = {
   // 'iphone'/'phone'/'samsung'/'smartphone'/'galaxy' moved down to the new `phones`
   // category below (categories-expansion round) — electronics keeps the more general terms.
   electronics: ['electronics', 'tablet', 'tv', 'television'],

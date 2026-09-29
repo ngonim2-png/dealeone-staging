@@ -2,7 +2,7 @@ import { Flag, ShieldAlert } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { useApp } from '../../context/AppContext'
-import { timeAgo } from '../../lib/format'
+import { relativeTime } from '../../lib/format'
 import {
   DISPUTE_REASON_LABELS,
   REPORT_REASON_LABELS,
@@ -59,7 +59,7 @@ export default function MyReports() {
                       <p className="truncate text-sm font-medium text-ink">
                         {REPORT_REASON_LABELS[r.reason]}
                       </p>
-                      <p className="text-xs text-muted">{timeAgo(r.createdAt)} ago</p>
+                      <p className="text-xs text-muted">{relativeTime(r.createdAt)}</p>
                     </div>
                   </div>
                   <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize ${REPORT_STATUS_STYLE[r.status]}`}>
@@ -90,7 +90,7 @@ export default function MyReports() {
                         </p>
                         <p className="truncate text-xs text-muted">
                           {listing ? `${listing.title} · ` : ''}
-                          {timeAgo(d.createdAt)} ago
+                          {relativeTime(d.createdAt)}
                         </p>
                       </div>
                     </div>

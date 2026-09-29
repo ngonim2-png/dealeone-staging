@@ -3,7 +3,7 @@ import type { Listing } from '../types'
 import { CATEGORY_META } from '../types'
 import { formatDistance, formatPrice } from '../lib/format'
 import { distanceKm } from '../lib/geo'
-import { isImageUrl } from '../lib/media'
+import { isImageUrl, mediaSrc } from '../lib/media'
 import { useApp } from '../context/AppContext'
 import { BadgeCheck, Star } from 'lucide-react'
 import Rating from './Rating'
@@ -16,7 +16,7 @@ export default function ListingCard({
   compact?: boolean
 }) {
   const navigate = useNavigate()
-  const { sellers, userLocation } = useApp()
+  const { sellers, userLocation, lowData } = useApp()
   const seller = sellers.find((s) => s.id === listing.sellerId)
   const dist = distanceKm(userLocation.lat, userLocation.lng, listing.lat, listing.lng)
   const meta = CATEGORY_META[listing.category]
@@ -29,10 +29,11 @@ export default function ListingCard({
       }`}
     >
       <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-surface-2 text-2xl">
-        {isImageUrl(listing.images[0]) ? (
-          <img src={listing.images[0]} alt="" className="h-full w-full object-cover" />
+        {isImageUrl(listing.images[0]) && !lowData ? (
+          <img src={mediaSrc(listing.images[0], 'thumb')} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
         ) : (
-          listing.images[0] ?? meta.emoji
+          // Low-data mode, or a demo listing without a photo: category emoji instead.
+          (isImageUrl(listing.images[0]) ? meta.emoji : listing.images[0]) ?? meta.emoji
         )}
       </div>
       <div className="min-w-0 flex-1">

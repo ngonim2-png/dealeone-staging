@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Users, ShieldHalf } from 'lucide-react'
+import { Users, ShieldHalf, Loader2 } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { api } from '../../lib/api'
+import LoadError from '../../components/LoadError'
 
 interface AdminUserRow {
   id: string
@@ -18,12 +19,14 @@ interface AdminUserRow {
 export default function AdminUsers() {
   const [q, setQ] = useState('')
   const [rows, setRows] = useState<AdminUserRow[] | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = (query: string) => {
+    setLoadError(false)
     api
       .get<{ users: AdminUserRow[] }>(`/api/admin/users${query ? `?q=${encodeURIComponent(query)}` : ''}`)
-      .then((res) => setRows(res.users))
+      .then((res) => setRows(res.users)).catch(() => setLoadError(true))
   }
 
   useEffect(() => {
@@ -55,6 +58,12 @@ export default function AdminUsers() {
         />
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {loadError && <LoadError onRetry={() => load(q)} />}
+        {!rows && !loadError && (
+          <div className="flex justify-center py-10 text-muted">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        )}
         {rows && rows.length === 0 && <EmptyState icon={Users} title="No users found" hint="Try a different search." />}
         {rows?.map((u) => (
           <div key={u.id} className="card-elevated flex items-center justify-between gap-2 rounded-xl bg-surface p-3">
@@ -73,7 +82,7 @@ export default function AdminUsers() {
             <button
               disabled={busyId === u.id || u.role === 'admin'}
               onClick={() => toggleSuspend(u)}
-              className={`tap-flash shrink-0 rounded-full px-3 py-1.5 text-xs transition active:scale-95 disabled:opacity-40 ${
+              className={`tap-flash shrink-0 min-h-9 rounded-full px-3.5 py-1.5 text-xs transition active:scale-95 disabled:opacity-40 ${
                 u.suspended ? 'bg-good/10 text-good' : 'bg-bad/10 text-bad'
               }`}
             >

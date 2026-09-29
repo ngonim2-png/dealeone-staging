@@ -39,7 +39,8 @@ export default function FilterSheet({
           <h2 className="text-xl font-display font-bold tracking-tight">Filters</h2>
           <button
             onClick={onClose}
-            className="icon-btn h-8 w-8 bg-surface-2"
+            aria-label="Close filters"
+            className="icon-btn h-11 w-11 bg-surface-2"
           >
             <X size={16} />
           </button>
@@ -84,7 +85,7 @@ export default function FilterSheet({
                 <button
                   key={c}
                   onClick={() => toggleCondition(c)}
-                  className={`tap-flash rounded-full px-3 py-1.5 text-xs capitalize transition active:scale-95 ${
+                  className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs capitalize transition active:scale-95 ${
                     filters.condition.includes(c)
                       ? 'glow-accent-ring bg-accent/15 text-accent'
                       : 'bg-surface-2 text-muted'
@@ -103,7 +104,7 @@ export default function FilterSheet({
                 <button
                   key={s.id}
                   onClick={() => onChange({ ...filters, sellerType: s.id })}
-                  className={`tap-flash rounded-full px-3 py-1.5 text-xs transition active:scale-95 ${
+                  className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs transition active:scale-95 ${
                     filters.sellerType === s.id
                       ? 'glow-accent-ring bg-accent/15 text-accent'
                       : 'bg-surface-2 text-muted'
@@ -122,7 +123,7 @@ export default function FilterSheet({
                 <button
                   key={a}
                   onClick={() => onChange({ ...filters, availability: a })}
-                  className={`tap-flash rounded-full px-3 py-1.5 text-xs transition active:scale-95 ${
+                  className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs transition active:scale-95 ${
                     filters.availability === a
                       ? 'glow-accent-ring bg-accent/15 text-accent'
                       : 'bg-surface-2 text-muted'

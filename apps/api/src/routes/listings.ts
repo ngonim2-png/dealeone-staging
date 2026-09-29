@@ -1,9 +1,10 @@
 import { Router } from 'express'
 import { and, asc, desc, eq, gte, inArray, lte, or, ilike, sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { isSafeImageValue } from '../lib/sanitize'
 import { db } from '../db/client'
-import { categoryEnum, listingPayments, listings, users } from '../db/schema'
-import { distanceKmExpr, presentListing } from '../lib/geo'
+import { categoryEnum, conditionEnum, listingPayments, listingStatusEnum, listingViews, listings, users } from '../db/schema'
+import { distanceKmExpr, presentListing, safeCoord } from '../lib/geo'
 import { requireAuth } from '../lib/auth'
 import {
   addMonths,
@@ -15,27 +16,46 @@ import {
   LISTING_FEE_PER_MONTH,
   sweepBilling,
 } from '../lib/billing'
+import { normalizeImages } from '../lib/media'
 
+import { storeDataUrl } from '../lib/media'
+import { matchSavedSearches, notifyPriceDrop } from '../lib/alerts'
+import { rewardReferrerOnFirstListing } from '../lib/referrals'
+import { createHash } from 'node:crypto'
 export const listingsRouter = Router()
 
 const DEFAULT_LAT = 8.4657 // Lumley, Freetown — used if the client doesn't send a location
 const DEFAULT_LNG = -13.2983
 
+// Comma-separated list params are validated against the real DB enums — an unknown value
+// used to go straight into the SQL and make Postgres throw (which, before the async error
+// fix, crashed the whole API). Numbers must be finite and sane.
+const csvOf = (allowed: readonly string[]) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').filter(Boolean) : undefined))
+    .refine((vals) => !vals || vals.every((x) => allowed.includes(x)), { message: 'Unknown value' })
+
 const querySchema = z.object({
-  lat: z.coerce.number().optional(),
-  lng: z.coerce.number().optional(),
-  radiusKm: z.coerce.number().optional(),
-  categories: z.string().optional(), // comma-separated
-  condition: z.string().optional(), // comma-separated
-  minPrice: z.coerce.number().optional(),
-  maxPrice: z.coerce.number().optional(),
+  lat: z.coerce.number().finite().min(-90).max(90).optional(),
+  lng: z.coerce.number().finite().min(-180).max(180).optional(),
+  radiusKm: z.coerce.number().finite().positive().optional(),
+  categories: csvOf(categoryEnum.enumValues),
+  condition: csvOf(conditionEnum.enumValues),
+  minPrice: z.coerce.number().finite().optional(),
+  maxPrice: z.coerce.number().finite().optional(),
   sellerType: z.enum(['any', 'individual', 'business', 'verified']).optional(),
-  q: z.string().optional(),
+  q: z.string().max(200).optional(),
   sort: z
     .enum(['closest', 'best_deal', 'recommended', 'sponsored', 'newest', 'price_asc', 'price_desc'])
     .optional(),
   sellerId: z.string().optional(),
-  status: z.string().optional(), // comma-separated, defaults to "active"
+  status: csvOf(listingStatusEnum.enumValues), // defaults to active
+  // Paging: the app loads the nearest page first and fetches more as people scroll,
+  // instead of every listing in the country at sign-in.
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).max(100_000).optional(),
 })
 
 listingsRouter.get('/', async (req, res) => {
@@ -53,20 +73,21 @@ listingsRouter.get('/', async (req, res) => {
   const radiusKm = q.radiusKm ?? 25000 // effectively "anywhere" if omitted
   const dist = distanceKmExpr(lat, lng)
 
-  const statusList = (q.status ?? 'active').split(',').filter(Boolean)
+  // Only the owner may browse their own non-public listings (drafts, sold, expired,
+  // removed). Anyone else asking for other statuses — e.g. ?status=removed to dig up
+  // moderated content — just gets the public active feed.
+  const ownListings = !!req.userId && q.sellerId === req.userId
+  const statusList = ownListings && q.status?.length ? q.status : ['active']
 
   const conditions = [inArray(listings.status, statusList as any), lte(dist, radiusKm)]
+  // Suspended sellers' listings disappear from public browsing.
+  if (!ownListings) conditions.push(eq(users.suspended, false))
 
-  if (q.categories) {
-    const cats = q.categories.split(',').filter(Boolean)
-    if (cats.length) conditions.push(inArray(listings.category, cats as any))
-  }
-  if (q.condition) {
-    const conds = q.condition.split(',').filter(Boolean)
-    if (conds.length) conditions.push(inArray(listings.condition, conds as any))
-  }
-  if (q.minPrice != null) conditions.push(gte(listings.price, q.minPrice))
-  if (q.maxPrice != null) conditions.push(lte(listings.price, q.maxPrice))
+  if (q.categories?.length) conditions.push(inArray(listings.category, q.categories as any))
+  if (q.condition?.length) conditions.push(inArray(listings.condition, q.condition as any))
+  // Prices are whole leones; round user-typed decimals rather than failing.
+  if (q.minPrice != null) conditions.push(gte(listings.price, Math.floor(q.minPrice)))
+  if (q.maxPrice != null) conditions.push(lte(listings.price, Math.ceil(q.maxPrice)))
   if (q.sellerId) conditions.push(eq(listings.sellerId, q.sellerId))
   if (q.q) {
     conditions.push(
@@ -111,8 +132,13 @@ listingsRouter.get('/', async (req, res) => {
     .from(listings)
     .innerJoin(users, eq(listings.sellerId, users.id))
     .where(and(...conditions))
-    .orderBy(orderBy)
-    .limit(200)
+    .orderBy(orderBy, listings.id)
+    .limit((q.limit ?? 200) + 1)
+    .offset(q.offset ?? 0)
+
+  const pageSize = q.limit ?? 200
+  const hasMore = rows.length > pageSize
+  if (hasMore) rows.length = pageSize
 
   let results = rows.map((r) => ({ ...r, listing: presentListing(r.listing, req.userId) }))
 
@@ -147,7 +173,89 @@ listingsRouter.get('/', async (req, res) => {
     results = [...results].sort((a, b) => Number(b.listing.categoryPinned) - Number(a.listing.categoryPinned))
   }
 
-  res.json({ results, count: results.length })
+  res.json({ results, count: results.length, hasMore, nextOffset: (q.offset ?? 0) + results.length })
+})
+
+// Fair-price guide for the Sell / Edit screens: what similar items go for nearby. Looks at
+// live and recently sold listings in the same category within 50 km, preferring ones whose
+// title shares a word with the seller's title (so "iPhone 12" compares against iPhones, not
+// every phone). Needs at least 3 comparable prices to say anything — a "guide" built from
+// one listing would just be that seller's price. Honest heuristics, no AI involved.
+const priceGuideSchema = z.object({
+  category: z.enum(categoryEnum.enumValues),
+  q: z.string().max(120).default(''),
+  exclude: z.string().uuid().optional(),
+})
+const GUIDE_STOP_WORDS = new Set(['for', 'and', 'the', 'with', 'new', 'used', 'sale', 'good', 'condition', 'clean'])
+
+listingsRouter.get('/price-guide', async (req, res) => {
+  const parsed = priceGuideSchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() })
+    return
+  }
+  const { category, q, exclude } = parsed.data
+  const lat = safeCoord(req.query.lat, 90, 8.4657)
+  const lng = safeCoord(req.query.lng, 180, -13.2317)
+  const dist = distanceKmExpr(lat, lng)
+  const rows = await db
+    .select({ id: listings.id, title: listings.title, price: listings.price })
+    .from(listings)
+    .where(
+      and(
+        eq(listings.category, category),
+        inArray(listings.status, ['active', 'reserved', 'sold']),
+        sql`${listings.price} > 0`,
+        sql`${dist} <= 50`,
+      ),
+    )
+    .orderBy(desc(listings.createdAt))
+    .limit(300)
+
+  const words = q
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !GUIDE_STOP_WORDS.has(w))
+  const pool = rows.filter((r) => r.id !== exclude)
+  const similar = words.length ? pool.filter((r) => words.some((w) => r.title.toLowerCase().includes(w))) : []
+  const basis = similar.length >= 3 ? similar : pool
+  if (basis.length < 3) {
+    res.json({ count: basis.length, basis: 'none' })
+    return
+  }
+  const prices = basis.map((r) => r.price).sort((a, b) => a - b)
+  const pct = (p: number) => prices[Math.min(prices.length - 1, Math.max(0, Math.round((prices.length - 1) * p)))]
+  res.json({
+    count: prices.length,
+    basis: basis === similar ? 'similar' : 'category',
+    low: pct(0.25),
+    median: pct(0.5),
+    high: pct(0.75),
+  })
+})
+
+// Count a view for the seller's insights: once per person (or per anonymous device/IP)
+// per day, never the seller's own. Fire-and-forget — never slows the page down.
+function recordView(listingId: string, sellerId: string, userId: string | undefined, ip: string | undefined) {
+  if (sellerId === userId) return
+  const viewerKey = userId ?? `ip:${createHash('sha256').update(String(ip)).digest('hex').slice(0, 16)}`
+  db.insert(listingViews)
+    .values({ listingId, viewerKey, day: new Date().toISOString().slice(0, 10) })
+    .onConflictDoNothing()
+    .catch((err) => console.error('record view failed', err))
+}
+
+// The app usually already has a listing from the feed and opens it without fetching it
+// again, so the detail screen pings this to count the view.
+listingsRouter.post('/:id/view', async (req, res) => {
+  const [row] = await db
+    .select({ id: listings.id, sellerId: listings.sellerId })
+    .from(listings)
+    .where(eq(listings.id, req.params.id))
+    .limit(1)
+  if (row) recordView(row.id, row.sellerId, req.userId, req.ip)
+  res.status(204).end()
 })
 
 listingsRouter.get('/:id', async (req, res) => {
@@ -176,8 +284,19 @@ listingsRouter.get('/:id', async (req, res) => {
     return
   }
 
-  const lat = Number(req.query.lat) || DEFAULT_LAT
-  const lng = Number(req.query.lng) || DEFAULT_LNG
+  // Non-public states (removed by moderation or the seller, unpublished drafts) are only
+  // visible to the owner. Sold/reserved/expired stay viewable so chat and offer history
+  // that points at them still renders for the buyer.
+  const hidden = ['removed', 'draft', 'pending_payment'].includes(row.listing.status)
+  if (hidden && row.listing.sellerId !== req.userId) {
+    res.status(404).json({ error: 'Listing not found' })
+    return
+  }
+
+  recordView(row.listing.id, row.listing.sellerId, req.userId, req.ip)
+
+  const lat = safeCoord(req.query.lat, 90, DEFAULT_LAT)
+  const lng = safeCoord(req.query.lng, 180, DEFAULT_LNG)
   const dist = distanceKmExpr(lat, lng)
   const [{ distanceKm }] = await db
     .select({ distanceKm: dist })
@@ -215,21 +334,23 @@ const createListingSchema = z.object({
   // user publishing one). Fixed by deriving straight from the DB enum instead of a second
   // hardcoded copy that has to be kept in sync by hand.
   category: z.enum(categoryEnum.enumValues),
-  title: z.string().min(1),
-  description: z.string().default(''),
-  price: z.number().int().nonnegative(),
+  title: z.string().trim().min(1).max(120),
+  description: z.string().max(4000).default(''),
+  price: z.number().int().nonnegative().max(1_000_000_000),
   negotiable: z.boolean().default(true),
   condition: z.enum(['new', 'used', 'refurbished']),
   quantity: z.number().int().positive().default(1),
-  lat: z.number(),
-  lng: z.number(),
+  lat: z.number().finite().min(-90).max(90),
+  lng: z.number().finite().min(-180).max(180),
   approxLocation: z.boolean().default(true),
   durationMonths: z.number().int().positive().max(12).default(3),
   // Each entry is either a short emoji placeholder (seed/demo data, or the category-emoji
   // fallback when a listing has no real photo) or a compressed base64 data URL from the
   // Sell flow's camera/gallery capture (see apps/web/src/lib/media.ts) — capped here so a
   // client can't push something huge past the compression step.
-  images: z.array(z.string().max(3_000_000)).max(5).default([]),
+  images: z.array(z.string().max(3_000_000).refine(isSafeImageValue, 'Unsupported image')).max(5).default([]),
+  // Optional spoken description, recorded in the app (≤ 2 minutes).
+  voiceNote: z.string().max(3_000_000).startsWith('data:audio/').optional(),
 })
 
 // spec §17-19: sell flow ends in a paid, live listing with an expiry set by duration.
@@ -266,7 +387,9 @@ listingsRouter.post('/', requireAuth, async (req, res) => {
       approxLocation: d.approxLocation,
       status: 'active', // MVP: fee payment is a simulated charge, listing goes live immediately
       type: 'standard',
-      images: d.images,
+      // New photos are stored in the media table; the row only keeps their URLs.
+      images: await normalizeImages(d.images, req.userId!),
+      voiceNoteUrl: d.voiceNote ? await storeDataUrl(d.voiceNote, req.userId!) : null,
       feePaidUntil,
       expiresAt,
     })
@@ -282,6 +405,57 @@ listingsRouter.post('/', requireAuth, async (req, res) => {
   })
 
   res.status(201).json({ listing: created })
+  // After responding: tell people whose saved searches this listing matches.
+  matchSavedSearches(created)
+  rewardReferrerOnFirstListing(req.userId!)
+})
+
+// Sellers can edit their listing (fix a typo, change the price, add photos). Lowering the
+// price notifies everyone who saved it. Sold/removed listings are frozen.
+const editListingSchema = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
+  description: z.string().max(4000).optional(),
+  price: z.number().int().nonnegative().max(1_000_000_000).optional(),
+  negotiable: z.boolean().optional(),
+  condition: z.enum(conditionEnum.enumValues).optional(),
+  quantity: z.number().int().positive().max(100_000).optional(),
+  category: z.enum(categoryEnum.enumValues).optional(),
+  images: z.array(z.string().max(3_000_000).refine(isSafeImageValue, 'Unsupported image')).max(5).optional(),
+  // A new recording (data URL), or null to remove the spoken description.
+  voiceNote: z.string().max(3_000_000).startsWith('data:audio/').nullable().optional(),
+})
+
+listingsRouter.patch('/:id', requireAuth, async (req, res) => {
+  const parsed = editListingSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.flatten() })
+    return
+  }
+  const [existing] = await db.select().from(listings).where(eq(listings.id, req.params.id)).limit(1)
+  if (!existing || existing.sellerId !== req.userId) {
+    res.status(404).json({ error: 'Listing not found' })
+    return
+  }
+  if (existing.status === 'sold' || existing.status === 'removed') {
+    res.status(409).json({ error: `A ${existing.status} listing can't be edited.` })
+    return
+  }
+  const d = parsed.data
+  const patch: Partial<typeof listings.$inferInsert> = { updatedAt: new Date() }
+  if (d.title !== undefined) patch.title = d.title
+  if (d.description !== undefined) patch.description = d.description
+  if (d.price !== undefined) patch.price = d.price
+  if (d.negotiable !== undefined) patch.negotiable = d.negotiable
+  if (d.condition !== undefined) patch.condition = d.condition
+  if (d.quantity !== undefined) patch.quantity = d.quantity
+  if (d.category !== undefined) patch.category = d.category
+  if (d.images !== undefined) patch.images = await normalizeImages(d.images, req.userId!)
+  if (d.voiceNote !== undefined) patch.voiceNoteUrl = d.voiceNote ? await storeDataUrl(d.voiceNote, req.userId!) : null
+  const [updated] = await db.update(listings).set(patch).where(eq(listings.id, existing.id)).returning()
+  res.json({ listing: presentListing(updated, req.userId) })
+  if (d.price !== undefined && d.price < existing.price && updated.status === 'active') {
+    notifyPriceDrop(updated, existing.price)
+  }
 })
 
 // Renews the recurring monthly listing fee (NLe 30) — extends feePaidUntil by another
@@ -295,14 +469,23 @@ listingsRouter.post('/:id/renew', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Listing not found' })
     return
   }
+  if (existing.status !== 'active' && existing.status !== 'expired') {
+    res.status(409).json({ error: `A ${existing.status} listing can't be renewed.` })
+    return
+  }
   const now = new Date()
   const base = existing.feePaidUntil > now ? existing.feePaidUntil : now
   const feePaidUntil = addMonths(base, 1)
+  // Paying for another month also keeps the listing within its lifetime cap for that
+  // month — otherwise the billing sweep (which now enforces expiresAt) would re-expire a
+  // freshly renewed listing whose original duration had run out.
+  const expiresAt = existing.expiresAt > feePaidUntil ? existing.expiresAt : feePaidUntil
 
   const [updated] = await db
     .update(listings)
     .set({
       feePaidUntil,
+      expiresAt,
       status: existing.status === 'expired' ? 'active' : existing.status,
       updatedAt: now,
     })
@@ -331,6 +514,23 @@ listingsRouter.post('/:id/boost', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Listing not found' })
     return
   }
+  if (existing.status !== 'active') {
+    res.status(409).json({ error: 'Only an active listing can be boosted.' })
+    return
+  }
+  // A free week earned through referrals is used instead of charging, when asked for.
+  const useCredit = req.body?.useCredit === true
+  if (useCredit) {
+    const [spent] = await db
+      .update(users)
+      .set({ boostCredits: sql`${users.boostCredits} - 1` })
+      .where(and(eq(users.id, req.userId!), sql`${users.boostCredits} > 0`))
+      .returning({ left: users.boostCredits })
+    if (!spent) {
+      res.status(409).json({ error: "You don't have a free boost week to use." })
+      return
+    }
+  }
   const now = new Date()
   const base = existing.sponsoredUntil && existing.sponsoredUntil > now ? existing.sponsoredUntil : now
   const sponsoredUntil = addWeeks(base, 1)
@@ -345,7 +545,7 @@ listingsRouter.post('/:id/boost', requireAuth, async (req, res) => {
     listingId: existing.id,
     sellerId: req.userId!,
     kind: 'boost',
-    amount: BOOST_FEE_PER_WEEK,
+    amount: useCredit ? 0 : BOOST_FEE_PER_WEEK,
     periodStart: base,
     periodEnd: sponsoredUntil,
   })
@@ -458,8 +658,8 @@ listingsRouter.post('/:id/banner-ad', requireAuth, async (req, res) => {
 // a fundamentally different question from "search/filter listings."
 listingsRouter.get('/banners/active', async (req, res) => {
   await sweepBilling()
-  const lat = Number(req.query.lat) || DEFAULT_LAT
-  const lng = Number(req.query.lng) || DEFAULT_LNG
+  const lat = safeCoord(req.query.lat, 90, DEFAULT_LAT)
+  const lng = safeCoord(req.query.lng, 180, DEFAULT_LNG)
   const dist = distanceKmExpr(lat, lng)
   const rows = await db
     .select({
@@ -491,10 +691,28 @@ listingsRouter.patch('/:id/status', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Listing not found' })
     return
   }
+  // Owners may only make the moves the UI actually offers. Previously any transition was
+  // accepted, so a seller could PATCH a listing an admin had removed straight back to
+  // 'active' (undoing moderation), or flip an expired/unpaid listing to 'active' without
+  // paying the monthly fee. Going live again after expiry is what /renew is for.
+  const allowed: Record<string, string[]> = {
+    active: ['reserved', 'sold', 'removed'],
+    reserved: ['active', 'sold', 'removed'],
+    expired: ['removed'],
+    draft: ['removed'],
+    pending_payment: ['removed'],
+    sold: [],
+    removed: [],
+  }
+  const next = parsed.data.status
+  if (next !== existing.status && !allowed[existing.status]?.includes(next)) {
+    res.status(409).json({ error: `A ${existing.status} listing can't be changed to ${next}.` })
+    return
+  }
   const [updated] = await db
     .update(listings)
-    .set({ status: parsed.data.status, updatedAt: new Date() })
+    .set({ status: next, updatedAt: new Date() })
     .where(eq(listings.id, req.params.id))
     .returning()
-  res.json({ listing: updated })
+  res.json({ listing: presentListing(updated, req.userId) })
 })

@@ -57,7 +57,7 @@ export default function DisputeSheet({
           <h2 className="flex items-center gap-2 text-xl font-display font-bold tracking-tight text-ink">
             <ShieldAlert size={17} className="text-accent" /> Report a problem
           </h2>
-          <button onClick={close} className="icon-btn h-8 w-8 bg-surface-2">
+          <button onClick={close} aria-label="Close" className="icon-btn h-11 w-11 bg-surface-2">
             <X size={16} />
           </button>
         </div>
@@ -81,7 +81,7 @@ export default function DisputeSheet({
                 <button
                   key={r}
                   onClick={() => setReason(r)}
-                  className={`tap-flash rounded-full px-3 py-1.5 text-xs transition active:scale-95 ${
+                  className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs transition active:scale-95 ${
                     reason === r ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
                   }`}
                 >

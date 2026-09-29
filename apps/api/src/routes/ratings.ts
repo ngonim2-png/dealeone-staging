@@ -34,6 +34,10 @@ ratingsRouter.post('/', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Listing not found' })
     return
   }
+  if (listing.sellerId === req.userId) {
+    res.status(400).json({ error: "You can't rate yourself." })
+    return
+  }
   if (listing.status !== 'sold') {
     res.status(400).json({ error: 'You can only rate a seller after a listing is marked sold.' })
     return

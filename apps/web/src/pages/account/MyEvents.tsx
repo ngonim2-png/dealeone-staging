@@ -5,25 +5,31 @@ import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { useApp } from '../../context/AppContext'
 import { EVENT_CATEGORY_META } from '../../types'
-import { api } from '../../lib/api'
+import { api, errorMessage } from '../../lib/api'
 import { mapEvent } from '../../lib/mappers'
 import { formatEventWhen } from '../../lib/format'
 import type { DealeoneEvent } from '../../types'
-import { isImageUrl } from '../../lib/media'
+import { isImageUrl, mediaSrc } from '../../lib/media'
+import { useToast } from '../../components/Toast'
+import LoadError from '../../components/LoadError'
 
 const ALL_STATUSES = 'active,cancelled'
 
 export default function MyEvents() {
+  const toast = useToast()
   const navigate = useNavigate()
   const { currentUser, updateEventStatus } = useApp()
   const [mine, setMine] = useState<DealeoneEvent[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   useEffect(() => {
     if (!currentUser) return
     let cancelled = false
     setLoading(true)
+    setLoadFailed(false)
     api
       .get<{ results: { event: any; interestedCount: number; isInterested: boolean }[] }>(
         `/api/events?organizerId=${currentUser.id}&status=${ALL_STATUSES}&when=all&radiusKm=25000`,
@@ -36,12 +42,15 @@ export default function MyEvents() {
             .sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime()),
         )
       })
-      .catch((err) => console.error('failed to load my events', err))
+      .catch((err) => {
+        console.error('failed to load my events', err)
+        if (!cancelled) setLoadFailed(true)
+      })
       .finally(() => !cancelled && setLoading(false))
     return () => {
       cancelled = true
     }
-  }, [currentUser])
+  }, [currentUser, reloadKey])
 
   const toggleStatus = async (event: DealeoneEvent) => {
     setBusyId(event.id)
@@ -50,7 +59,7 @@ export default function MyEvents() {
       setMine((prev) => prev.map((e) => (e.id === updated.id ? { ...updated, interestedCount: e.interestedCount, isInterested: e.isInterested } : e)))
     } catch (err) {
       console.error('update event status failed', err)
-      alert('Could not update this event — check the API server is running and try again.')
+      toast.error(errorMessage(err, 'Could not update this event — please try again.'))
     } finally {
       setBusyId(null)
     }
@@ -60,7 +69,8 @@ export default function MyEvents() {
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="My Events" />
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
-        {!loading && mine.length === 0 && (
+        {loadFailed && <LoadError onRetry={() => setReloadKey((k) => k + 1)} />}
+        {!loading && !loadFailed && mine.length === 0 && (
           <EmptyState
             icon={CalendarDays}
             title="You haven't hosted any events yet"
@@ -78,7 +88,7 @@ export default function MyEvents() {
               >
                 <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-surface-2 text-2xl">
                   {isImageUrl(event.images[0]) ? (
-                    <img src={event.images[0]} alt="" className="h-full w-full object-cover" />
+                    <img src={mediaSrc(event.images[0], 'thumb')} alt="" className="h-full w-full object-cover" />
                   ) : (
                     event.images[0] ?? meta.emoji
                   )}

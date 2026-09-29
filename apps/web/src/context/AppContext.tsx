@@ -4,10 +4,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
 import type {
+  AppNotification,
   BuyerRequest,
   ChatMessage,
   Conversation,
@@ -25,7 +27,11 @@ import type {
   StatusGroup,
   TicketTier,
 } from '../types'
-import { api, clearSessionToken, getSessionToken, setSessionToken } from '../lib/api'
+import { distanceKm } from '../lib/geo'
+import { connectLive } from '../lib/live'
+import { clearStoredReferralCode, getStoredReferralCode } from '../lib/referral'
+import { useToast } from '../components/Toast'
+import { api, ApiError, clearSessionToken, errorMessage, getSessionToken, isNetworkError, setSessionToken } from '../lib/api'
 import {
   mapBuyerRequest,
   mapCurrentUser,
@@ -53,6 +59,21 @@ export interface NewListingInput {
   approxLocation: boolean
   durationMonths: number
   images: string[]
+  // Optional spoken description recorded in the Sell flow (data:audio/… URL).
+  voiceNote?: string
+}
+
+// Fields a seller can change on a listing after publishing (see EditListing.tsx).
+export interface EditListingInput {
+  title?: string
+  description?: string
+  price?: number
+  negotiable?: boolean
+  condition?: Listing['condition']
+  quantity?: number
+  category?: Listing['category']
+  images?: string[]
+  voiceNote?: string | null
 }
 
 export interface NewEventInput {
@@ -98,8 +119,19 @@ interface AppContextValue {
   // coordinate until/unless GPS resolves. One instance shared app-wide via context rather
   // than each page starting its own watchPosition.
   userLocation: LiveLocation
+  // True when a stored session belongs to someone who signed up but never entered a name —
+  // Login.tsx resumes at its name step instead of the phone step.
+  needsProfile: boolean
+  // Look up a listing/event by id, including ones that are no longer in the public feed
+  // (sold, reserved, expired, cancelled, past). Chats, offers and detail pages that point
+  // at such items used to show "not found" because `listings`/`events` only hold the live
+  // public feed. getX is synchronous; loadX fetches it in the background if it's missing.
+  getListing: (id: string | undefined) => Listing | undefined
+  loadListing: (id: string) => Promise<void>
+  getEvent: (id: string | undefined) => DealeoneEvent | undefined
+  loadEvent: (id: string) => Promise<void>
   checkPhone: (phone: string) => Promise<{ exists: boolean }>
-  signup: (phone: string, pin: string) => Promise<void>
+  signup: (phone: string, pin: string, referralCode?: string) => Promise<void>
   login: (phone: string, pin: string) => Promise<void>
   completeProfile: (name: string) => Promise<void>
   logout: () => void
@@ -133,7 +165,10 @@ interface AppContextValue {
   // All three are simulated charges (no real payment gateway yet) that always succeed —
   // see apps/api/src/lib/billing.ts.
   renewListing: (listingId: string) => Promise<Listing>
-  boostListing: (listingId: string) => Promise<Listing>
+  // useCredit spends a free boost week earned from referrals instead of paying.
+  boostListing: (listingId: string, useCredit?: boolean) => Promise<Listing>
+  // Seller edits a published listing; a price cut alerts everyone who saved it.
+  editListing: (listingId: string, input: EditListingInput) => Promise<Listing>
   featureListing: (listingId: string) => Promise<Listing>
   // "Top Search Placement" (pin within category) and the Explore banner ad — the other two
   // NLe 100/wk promotions that were only ever a suggestion until this round. Same
@@ -151,6 +186,9 @@ interface AppContextValue {
   // Real business-account toggle (account/Settings.tsx) — before this round isBusiness was
   // seed-data only. Gates the banner ad and buyer-request priority-access purchases below.
   updateBusinessProfile: (input: { isBusiness: boolean; businessName?: string }) => Promise<void>
+  // Change the display name (account/Settings.tsx) — there was previously no way to fix a
+  // typo'd name after signup.
+  updateName: (name: string) => Promise<void>
   // "Verified-seller fast-track" and "Buyer-Request priority access" (both NLe 100/wk,
   // account-scoped rather than listing-scoped) — see account/Verification.tsx and
   // account/BuyerRequestsFeed.tsx.
@@ -170,6 +208,24 @@ interface AppContextValue {
   }) => Promise<void>
   loadThread: (conversationId: string) => Promise<void>
   refreshListings: () => Promise<void>
+  // Paged feed: the nearest FEED_PAGE listings load at sign-in; more load as people scroll.
+  // Low-data mode (Settings): photos aren't downloaded until tapped. Defaults on when the
+  // phone's own "Data Saver" is on or the connection is 2G.
+  lowData: boolean
+  setLowData: (on: boolean) => void
+  // True while the device has no connection — the app keeps working from its saved copy.
+  offline: boolean
+  // The bell (see pages/Notifications.tsx) — kept current in real time via the live stream.
+  notifications: AppNotification[]
+  unreadNotifications: number
+  markAllNotificationsRead: () => void
+  markNotificationRead: (id: string) => void
+  // ChatThread tells the app which conversation is on screen, so a message arriving live
+  // there isn't counted as unread (and doesn't pop a toast).
+  setActiveConversation: (id: string | null) => void
+  listingsHasMore: boolean
+  listingsLoadingMore: boolean
+  loadMoreListings: () => Promise<void>
   refreshEvents: () => Promise<void>
   refreshStatuses: () => Promise<void>
   // Real server-side eligibility enforcement (see isEligibleForStatus) — this just posts the
@@ -180,6 +236,20 @@ interface AppContextValue {
   // Marks one status as seen by the current viewer — called once per slide from
   // StatusViewer.tsx as it auto-advances.
   viewStatus: (statusId: string) => void
+}
+
+const FEED_PAGE = 40
+
+function mapNotification(n: any): AppNotification {
+  return {
+    id: n.id,
+    type: n.type,
+    title: n.title,
+    body: n.body ?? '',
+    url: n.url ?? undefined,
+    read: !!n.read,
+    createdAt: typeof n.createdAt === 'string' ? n.createdAt : new Date(n.createdAt).toISOString(),
+  }
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -199,9 +269,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [reports, setReports] = useState<Report[]>([])
   const [disputes, setDisputes] = useState<Dispute[]>([])
   const [ratedListingIds, setRatedListingIds] = useState<string[]>([])
+  const [needsProfile, setNeedsProfile] = useState(false)
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
+  const [unreadNotifications, setUnreadNotifications] = useState(0)
+  const activeConversationRef = useRef<string | null>(null)
+  const toast = useToast()
+  const [extraListings, setExtraListings] = useState<Record<string, Listing>>({})
+  const [extraEvents, setExtraEvents] = useState<Record<string, DealeoneEvent>>({})
+  const requestedIds = useRef(new Set<string>())
   const [statusGroups, setStatusGroups] = useState<StatusGroup[]>([])
   const [canPostStatus, setCanPostStatus] = useState(false)
   const userLocation = useLiveLocation()
+  // Latest position without making every fetch callback depend on (and re-create for) each
+  // GPS update.
+  const locationRef = useRef(userLocation)
+  locationRef.current = userLocation
+  const [lowData, setLowDataState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('dealeone.lowData')
+      if (saved != null) return saved === '1'
+    } catch {
+      // storage unavailable — fall through to the connection hint
+    }
+    const conn = (navigator as any).connection
+    return !!conn && (conn.saveData === true || /(^|-)2g$/.test(conn.effectiveType ?? ''))
+  })
+  const setLowData = useCallback((on: boolean) => {
+    setLowDataState(on)
+    try {
+      localStorage.setItem('dealeone.lowData', on ? '1' : '0')
+    } catch {
+      // not persisted — still applies for this session
+    }
+  }, [])
+  const [offline, setOffline] = useState(() => typeof navigator !== 'undefined' && navigator.onLine === false)
+  useEffect(() => {
+    const on = () => setOffline(false)
+    const off = () => setOffline(true)
+    window.addEventListener('online', on)
+    window.addEventListener('offline', off)
+    return () => {
+      window.removeEventListener('online', on)
+      window.removeEventListener('offline', off)
+    }
+  }, [])
+  const [listingsHasMore, setListingsHasMore] = useState(false)
+  const [listingsLoadingMore, setListingsLoadingMore] = useState(false)
+  // Where the current feed's first page was centred.
+  const feedCenterRef = useRef<{ lat: number; lng: number } | null>(null)
+  const fetchListingsPage = useCallback(async (offset: number) => {
+    const { lat, lng } = locationRef.current
+    if (offset === 0) feedCenterRef.current = { lat, lng }
+    return api.get<{ results: { listing: any; distanceKm: number; seller: any }[]; hasMore?: boolean }>(
+      `/api/listings?radiusKm=25000&status=active&lat=${lat}&lng=${lng}&limit=${FEED_PAGE}&offset=${offset}`,
+    )
+  }, [])
 
   const mergeSellers = useCallback((incoming: Seller[]) => {
     setSellersById((prev) => {
@@ -212,12 +334,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshListings = useCallback(async () => {
-    const res = await api.get<{ results: { listing: any; distanceKm: number; seller: any }[] }>(
-      '/api/listings?radiusKm=25000&status=active',
-    )
+    const res = await fetchListingsPage(0)
     setListings(res.results.map((r) => mapListing(r.listing)))
+    setListingsHasMore(!!res.hasMore)
     mergeSellers(res.results.map((r) => mapSeller(r.seller)))
-  }, [mergeSellers])
+  }, [mergeSellers, fetchListingsPage])
+
+  const loadMoreListings = useCallback(async () => {
+    if (listingsLoadingMore || !listingsHasMore) return
+    setListingsLoadingMore(true)
+    try {
+      const res = await fetchListingsPage(listings.length)
+      mergeSellers(res.results.map((r) => mapSeller(r.seller)))
+      setListings((prev) => {
+        const seen = new Set(prev.map((l) => l.id))
+        return [...prev, ...res.results.map((r) => mapListing(r.listing)).filter((l) => !seen.has(l.id))]
+      })
+      setListingsHasMore(!!res.hasMore)
+    } finally {
+      setListingsLoadingMore(false)
+    }
+  }, [listingsLoadingMore, listingsHasMore, listings.length, fetchListingsPage, mergeSellers])
 
   // Events — fetched the same way listings are: a wide radius, `when=all` so both upcoming
   // and past events are already in client state for Events.tsx's tabs/filters to slice
@@ -258,6 +395,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       conversations: {
         conversation: any
         seller: any
+        role?: 'buyer' | 'seller'
         lastMessage: any
         unreadCount: number
       }[]
@@ -271,6 +409,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           listingId: c.conversation.listingId ?? undefined,
           eventId: c.conversation.eventId ?? undefined,
           sellerId: c.conversation.sellerId,
+          role: c.role ?? 'buyer',
+          otherPartyId: c.seller?.id ?? c.conversation.sellerId,
           lastMessageAt: c.conversation.lastMessageAt,
           unreadCount: c.unreadCount,
           messages: existing?.messages ?? (c.lastMessage ? [mapMessage(c.lastMessage)] : []),
@@ -286,69 +426,107 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // signup/completeProfile below) — calling this too early would skip that step.
   const activateSession = useCallback(
     async (rawUser: any) => {
-      setCurrentUser(mapCurrentUser(rawUser))
       // the signed-in user is also a potential seller (spec §3 — no buyer/seller
       // split) — make sure their own listings can resolve a seller record too.
       mergeSellers([mapSeller(rawUser)])
 
-      const [
-        listingsRes,
-        eventsRes,
-        wishlistRes,
-        offersRes,
-        buyerReqRes,
-        reportsRes,
-        disputesRes,
-        ratingsRes,
-        statusesRes,
-      ] = await Promise.all([
-        api.get<{ results: { listing: any; seller: any }[] }>(
-          '/api/listings?radiusKm=25000&status=active',
-        ),
-        api.get<{
-          results: { event: any; organizer: any; interestedCount: number; isInterested: boolean }[]
-        }>('/api/events?radiusKm=25000&when=all&status=active'),
-        api.get<{ wishlist: { listing: any }[] }>('/api/wishlist'),
-        api.get<{ offers: { offer: any }[] }>('/api/offers'),
-        api.get<{ buyerRequests: any[] }>('/api/buyer-requests'),
-        api.get<{ reports: any[] }>('/api/reports/mine'),
-        api.get<{ disputes: { dispute: any }[] }>('/api/disputes/mine'),
-        api.get<{ listingIds: string[] }>('/api/ratings/mine'),
-        api.get<{
-          canPost: boolean
-          groups: { userId: string; allViewed: boolean; statuses: any[] }[]
-          posters: any[]
-        }>('/api/statuses'),
-      ])
+      // Listings are essential (the home map is empty without them) — if that one fails
+      // the whole sign-in fails with a readable error the caller can show and retry.
+      // Everything else loads with allSettled: one slow or failing secondary endpoint
+      // (statuses, reports…) used to leave the app stuck forever on "Setting things up…".
+      const listingsRes = await fetchListingsPage(0)
+      const [eventsR, wishlistR, offersR, buyerReqR, reportsR, disputesR, ratingsR, statusesR, , notificationsR] =
+        await Promise.allSettled([
+          api.get<{
+            results: { event: any; organizer: any; interestedCount: number; isInterested: boolean }[]
+          }>('/api/events?radiusKm=25000&when=all&status=active'),
+          api.get<{ wishlist: { listing: any }[] }>('/api/wishlist'),
+          api.get<{ offers: { offer: any }[] }>('/api/offers'),
+          api.get<{ buyerRequests: any[] }>('/api/buyer-requests'),
+          api.get<{ reports: any[] }>('/api/reports/mine'),
+          api.get<{ disputes: { dispute: any }[] }>('/api/disputes/mine'),
+          api.get<{ listingIds: string[] }>('/api/ratings/mine'),
+          api.get<{
+            canPost: boolean
+            groups: { userId: string; allViewed: boolean; statuses: any[] }[]
+            posters: any[]
+          }>('/api/statuses'),
+          refreshConversations(),
+          api.get<{ notifications: any[]; unreadCount: number }>('/api/notifications'),
+        ])
+      const ok = <T,>(r: PromiseSettledResult<T>): T | null => {
+        if (r.status === 'fulfilled') return r.value
+        console.error('startup load failed', r.reason)
+        return null
+      }
 
       setListings(listingsRes.results.map((r) => mapListing(r.listing)))
+      setListingsHasMore(!!listingsRes.hasMore)
       mergeSellers(listingsRes.results.map((r) => mapSeller(r.seller)))
-      setEvents(
-        eventsRes.results.map((r) => mapEvent({ ...r.event, interestedCount: r.interestedCount, isInterested: r.isInterested })),
-      )
-      mergeSellers(eventsRes.results.map((r) => mapSeller(r.organizer)))
-      setWishlist(wishlistRes.wishlist.map((w) => w.listing.id))
-      setOffers(offersRes.offers.map((o) => mapOffer(o.offer)))
-      setBuyerRequests(buyerReqRes.buyerRequests.map(mapBuyerRequest))
-      setReports(reportsRes.reports.map(mapReport))
-      setDisputes(disputesRes.disputes.map((d) => mapDispute(d.dispute)))
-      setRatedListingIds(ratingsRes.listingIds)
-      setCanPostStatus(statusesRes.canPost)
-      setStatusGroups(
-        statusesRes.groups.map((g) => ({
-          userId: g.userId,
-          allViewed: g.allViewed,
-          statuses: g.statuses.map(mapStatusItem),
-        })),
-      )
-      mergeSellers(statusesRes.posters.map(mapSeller))
+      const eventsRes = ok(eventsR)
+      if (eventsRes) {
+        setEvents(
+          eventsRes.results.map((r) => mapEvent({ ...r.event, interestedCount: r.interestedCount, isInterested: r.isInterested })),
+        )
+        mergeSellers(eventsRes.results.map((r) => mapSeller(r.organizer)))
+      }
+      const wishlistRes = ok(wishlistR)
+      if (wishlistRes) setWishlist(wishlistRes.wishlist.map((w) => w.listing.id))
+      const offersRes = ok(offersR)
+      if (offersRes) setOffers(offersRes.offers.map((o) => mapOffer(o.offer)))
+      const buyerReqRes = ok(buyerReqR)
+      if (buyerReqRes) setBuyerRequests(buyerReqRes.buyerRequests.map(mapBuyerRequest))
+      const reportsRes = ok(reportsR)
+      if (reportsRes) setReports(reportsRes.reports.map(mapReport))
+      const disputesRes = ok(disputesR)
+      if (disputesRes) setDisputes(disputesRes.disputes.map((d) => mapDispute(d.dispute)))
+      const ratingsRes = ok(ratingsR)
+      if (ratingsRes) setRatedListingIds(ratingsRes.listingIds)
+      const statusesRes = ok(statusesR)
+      if (statusesRes) {
+        setCanPostStatus(statusesRes.canPost)
+        setStatusGroups(
+          statusesRes.groups.map((g) => ({
+            userId: g.userId,
+            allViewed: g.allViewed,
+            statuses: g.statuses.map(mapStatusItem),
+          })),
+        )
+        mergeSellers(statusesRes.posters.map(mapSeller))
+      }
 
-      await refreshConversations()
+      const notificationsRes = ok(notificationsR)
+      if (notificationsRes) {
+        setNotifications(notificationsRes.notifications.map(mapNotification))
+        setUnreadNotifications(notificationsRes.unreadCount)
+      }
+
+      // Remembered so the app can still open (from its saved copy) with no connection.
+      try {
+        localStorage.setItem('dealeone.lastUser', JSON.stringify(rawUser))
+      } catch {
+        // not critical
+      }
+      // Set last: this is what swaps App.tsx from the login screen into the app, so it
+      // only happens once there's actually something to show.
+      setCurrentUser(mapCurrentUser(rawUser))
+      setNeedsProfile(false)
       setAuthChecked(true)
       setReady(true)
     },
-    [mergeSellers, refreshConversations],
+    [mergeSellers, refreshConversations, fetchListingsPage],
   )
+
+  // When GPS first locks on somewhere well away from where the feed was loaded (the feed
+  // loads around a default spot until then), reload it around the real position so
+  // "nearest first" is actually nearest to the person.
+  useEffect(() => {
+    if (!ready || userLocation.status !== 'live') return
+    const c = feedCenterRef.current
+    if (c && distanceKm(c.lat, c.lng, userLocation.lat, userLocation.lng) < 3) return
+    refreshListings().catch((err) => console.error('reload feed near GPS failed', err))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, userLocation.status, userLocation.lat, userLocation.lng])
 
   // On launch: if a session token is already stored, validate it against the API. Valid
   // -> load straight into the app. Missing/invalid -> authChecked flips true with no
@@ -357,28 +535,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     async function bootstrap() {
+      const token = getSessionToken()
+      if (!token) {
+        if (!cancelled) setAuthChecked(true)
+        return
+      }
       try {
-        const token = getSessionToken()
-        if (token) {
+        const res = await api.get<{ user: any }>('/api/users/me')
+        if (cancelled) return
+        // Signed up but closed the app before entering a name: resume at the name step
+        // instead of dropping them into the app as "New User" forever.
+        if (!res.user?.name || res.user.name === 'New User') {
+          setNeedsProfile(true)
+          setAuthChecked(true)
+          return
+        }
+        await activateSession(res.user)
+      } catch (err) {
+        if (cancelled) return
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          // Expired/invalid token, suspended or deleted account → back to the login screen.
+          clearSessionToken()
+          setAuthChecked(true)
+          return
+        }
+        // Offline, or the API is down/waking up: keep the session (being offline used to
+        // sign people out). If this phone has opened the app before, open it from the saved
+        // copy (listings/events come from the service-worker cache); otherwise show retry.
+        console.error(err)
+        let cached: any = null
+        try {
+          cached = JSON.parse(localStorage.getItem('dealeone.lastUser') ?? 'null')
+        } catch {
+          cached = null
+        }
+        if (cached && isNetworkError(err)) {
           try {
-            const res = await api.get<{ user: any }>('/api/users/me')
-            if (cancelled) return
-            await activateSession(res.user)
+            await activateSession(cached)
+            setOffline(true)
             return
           } catch {
-            clearSessionToken() // stale/invalid/expired — fall through to the login screen
+            // no saved feed either — fall through to the retry screen
           }
         }
-        if (!cancelled) setAuthChecked(true)
-      } catch (err) {
-        console.error(err)
-        if (!cancelled) {
-          setError(
-            err instanceof Error
-              ? `Could not reach the DEALEONE API — ${err.message}`
-              : 'Could not reach the DEALEONE API.',
-          )
-        }
+        setError(errorMessage(err, "Can't reach DEALEONE right now."))
       }
     }
 
@@ -397,11 +597,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return api.post<{ exists: boolean }>('/api/auth/check', { phone })
   }, [])
 
-  const signup = useCallback(async (phone: string, pin: string) => {
+  const signup = useCallback(async (phone: string, pin: string, referralCode?: string) => {
+    const code = (referralCode ?? getStoredReferralCode() ?? '').trim().toUpperCase()
     const res = await api.post<{ token: string; user: any; isNewUser: boolean }>('/api/auth/signup', {
       phone,
       pin,
+      ...(code ? { referralCode: code } : {}),
     })
+    clearStoredReferralCode()
     // Token is stored right away — a brand-new user still needs an authenticated request
     // (PATCH /api/users/me) to complete their profile in the next step (see completeProfile
     // below), so activateSession is deliberately NOT called yet.
@@ -432,6 +635,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     clearSessionToken()
+    try {
+      localStorage.removeItem('dealeone.lastUser')
+    } catch {
+      // ignore
+    }
     setCurrentUser(null)
     setListings([])
     setEvents([])
@@ -445,6 +653,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setRatedListingIds([])
     setStatusGroups([])
     setCanPostStatus(false)
+    setExtraListings({})
+    setExtraEvents({})
+    requestedIds.current.clear()
+    setNeedsProfile(false)
+    setNotifications([])
+    setUnreadNotifications(0)
     setReady(false)
     setAuthChecked(true)
   }, [])
@@ -524,14 +738,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // already in state — the status-patch response doesn't recompute those (see
   // routes/events.ts's PATCH /:id/status), so blindly overwriting would reset a real count
   // back to 0 in the UI until the next full refreshEvents.
+  // Keeps the public events feed in step with a status change: a reactivated event reappears
+  // (it used to stay missing until a full reload), a cancelled one drops out.
   const patchEvent = useCallback((updated: DealeoneEvent) => {
-    setEvents((prev) =>
-      prev.map((e) =>
-        e.id === updated.id
-          ? { ...updated, interestedCount: e.interestedCount, isInterested: e.isInterested }
-          : e,
-      ),
-    )
+    setEvents((prev) => {
+      const existing = prev.find((e) => e.id === updated.id)
+      if (updated.status !== 'active') return prev.filter((e) => e.id !== updated.id)
+      if (!existing) return [updated, ...prev]
+      return prev.map((e) =>
+        e.id === updated.id ? { ...updated, interestedCount: e.interestedCount, isInterested: e.isInterested } : e,
+      )
+    })
+    setExtraEvents((prev) => (prev[updated.id] ? { ...prev, [updated.id]: { ...prev[updated.id], ...updated } } : prev))
   }, [])
 
   const updateEventStatus = useCallback(
@@ -562,8 +780,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // it's there, but don't worry if it's not" behavior (a seller's own expired/older listings
   // often aren't in the main `listings` feed at all, since that only holds the active
   // public feed — MyListings keeps its own separate fetch and patches itself directly).
+  // Same idea for listings: renewing an expired listing puts it back on the map right away;
+  // marking one sold/removed takes it off.
   const patchListing = useCallback((updated: Listing) => {
-    setListings((prev) => (prev.some((l) => l.id === updated.id) ? prev.map((l) => (l.id === updated.id ? updated : l)) : prev))
+    setListings((prev) => {
+      const present = prev.some((l) => l.id === updated.id)
+      if (updated.status !== 'active') return present ? prev.filter((l) => l.id !== updated.id) : prev
+      return present ? prev.map((l) => (l.id === updated.id ? updated : l)) : [updated, ...prev]
+    })
+    setExtraListings((prev) => (prev[updated.id] ? { ...prev, [updated.id]: updated } : prev))
   }, [])
 
   const renewListing = useCallback(
@@ -577,8 +802,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const boostListing = useCallback(
-    async (listingId: string) => {
-      const res = await api.post<{ listing: any }>(`/api/listings/${listingId}/boost`, {})
+    async (listingId: string, useCredit = false) => {
+      const res = await api.post<{ listing: any }>(`/api/listings/${listingId}/boost`, useCredit ? { useCredit: true } : {})
+      const listing = mapListing(res.listing)
+      patchListing(listing)
+      return listing
+    },
+    [patchListing],
+  )
+
+  const editListing = useCallback(
+    async (listingId: string, input: EditListingInput) => {
+      const res = await api.patch<{ listing: any }>(`/api/listings/${listingId}`, input)
       const listing = mapListing(res.listing)
       patchListing(listing)
       return listing
@@ -639,6 +874,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const updateName = useCallback(
+    async (name: string) => {
+      const res = await api.patch<{ user: any }>('/api/users/me', { name })
+      setCurrentUser(mapCurrentUser(res.user))
+      mergeSellers([mapSeller(res.user)])
+    },
+    [mergeSellers],
+  )
+
   const purchaseVerificationPriority = useCallback(async () => {
     const res = await api.post<{ user: any }>('/api/verification-requests/priority', {})
     setCurrentUser(mapCurrentUser(res.user))
@@ -659,6 +903,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           listingId: res.conversation.listingId ?? undefined,
           eventId: res.conversation.eventId ?? undefined,
           sellerId: res.conversation.sellerId,
+          role: 'buyer' as const,
+          otherPartyId: res.conversation.sellerId,
           lastMessageAt: res.conversation.lastMessageAt,
           unreadCount: 0,
           messages: [],
@@ -681,6 +927,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           listingId: res.conversation.listingId ?? undefined,
           eventId: res.conversation.eventId ?? undefined,
           sellerId: res.conversation.sellerId,
+          role: 'buyer' as const,
+          otherPartyId: res.conversation.sellerId,
           lastMessageAt: res.conversation.lastMessageAt,
           unreadCount: 0,
           messages: [],
@@ -698,7 +946,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const msg = mapMessage(res.message)
     setConversations((prev) =>
       prev.map((c) =>
-        c.id === conversationId
+        // The live stream may already have delivered this exact message — don't add it twice.
+        c.id === conversationId && !c.messages.some((m) => m.id === msg.id)
           ? { ...c, messages: [...c.messages, msg], lastMessageAt: msg.createdAt }
           : c,
       ),
@@ -717,7 +966,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const msg = mapMessage(res.message)
     setConversations((prev) =>
       prev.map((c) =>
-        c.id === conversationId
+        // The live stream may already have delivered this exact message — don't add it twice.
+        c.id === conversationId && !c.messages.some((m) => m.id === msg.id)
           ? { ...c, messages: [...c.messages, msg], lastMessageAt: msg.createdAt }
           : c,
       ),
@@ -738,7 +988,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     setConversations((prev) =>
       prev.map((c) =>
-        c.id === conversationId
+        // The live stream may already have delivered this exact message — don't add it twice.
+        c.id === conversationId && !c.messages.some((m) => m.id === msg.id)
           ? { ...c, messages: [...c.messages, msg], lastMessageAt: msg.createdAt }
           : c,
       ),
@@ -759,17 +1010,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [conversations],
   )
 
+  // Loads a thread's messages. Upserts the conversation too, so a thread that isn't in
+  // local state yet (opened from a deep link, or one just created by responding to a buyer
+  // request) renders instead of showing "Conversation not found".
   const loadThread = useCallback(async (conversationId: string) => {
-    const res = await api.get<{ messages: any[]; seller: any }>(
+    const res = await api.get<{ conversation: any; messages: any[]; seller: any; role?: 'buyer' | 'seller' }>(
       `/api/conversations/${conversationId}`,
     )
-    mergeSellers([mapSeller(res.seller)])
+    if (res.seller) mergeSellers([mapSeller(res.seller)])
     const msgs = res.messages.map(mapMessage)
-    setConversations((prev) =>
-      prev.map((c) => (c.id === conversationId ? { ...c, messages: msgs } : c)),
-    )
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    setConversations((prev) => {
+      if (prev.some((c) => c.id === conversationId)) {
+        return prev.map((c) => (c.id === conversationId ? { ...c, messages: msgs } : c))
+      }
+      const c = res.conversation
+      return [
+        {
+          id: c.id,
+          listingId: c.listingId ?? undefined,
+          eventId: c.eventId ?? undefined,
+          sellerId: c.sellerId,
+          role: res.role ?? 'buyer',
+          otherPartyId: res.seller?.id ?? c.sellerId,
+          lastMessageAt: c.lastMessageAt,
+          unreadCount: 0,
+          messages: msgs,
+        },
+        ...prev,
+      ]
+    })
+  }, [mergeSellers])
 
   const addBuyerRequest = useCallback(
     async (req: { product: string; maxOffer: number; radiusKm: number; condition: 'new' | 'used' | 'either' }) => {
@@ -824,6 +1094,142 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const markAllNotificationsRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
+    setUnreadNotifications(0)
+    api.post('/api/notifications/read-all').catch((err) => console.error('mark all read failed', err))
+  }, [])
+  const markNotificationRead = useCallback((id: string) => {
+    setNotifications((prev) => {
+      const target = prev.find((n) => n.id === id)
+      if (target && !target.read) setUnreadNotifications((c) => Math.max(0, c - 1))
+      return prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+    })
+    api.patch(`/api/notifications/${id}/read`).catch((err) => console.error('mark read failed', err))
+  }, [])
+  const setActiveConversation = useCallback((id: string | null) => {
+    activeConversationRef.current = id
+  }, [])
+
+  // Real-time updates while signed in (see lib/live.ts): chat messages from the other
+  // person appear immediately, the Messages badge and the bell update without a refresh.
+  const conversationsRef = useRef(conversations)
+  conversationsRef.current = conversations
+  const sellersRef = useRef(sellersById)
+  sellersRef.current = sellersById
+  useEffect(() => {
+    if (!ready || !currentUser) return
+    const me = currentUser.id
+    return connectLive(
+      (e) => {
+        if (e.type === 'message') {
+          const msg = mapMessage(e.message)
+          const known = conversationsRef.current.some((c) => c.id === e.conversationId)
+          if (!known) {
+            refreshConversations().catch(() => {})
+          } else {
+            const viewing = activeConversationRef.current === e.conversationId
+            setConversations((prev) => {
+              const updated = prev.map((c) => {
+                if (c.id !== e.conversationId || c.messages.some((m) => m.id === msg.id)) return c
+                return {
+                  ...c,
+                  messages: [...c.messages, msg],
+                  lastMessageAt: msg.createdAt,
+                  unreadCount: msg.senderId !== me && !viewing ? c.unreadCount + 1 : c.unreadCount,
+                }
+              })
+              // Newest conversation first, like every messaging app.
+              return [...updated].sort((a, b) => (a.lastMessageAt < b.lastMessageAt ? 1 : -1))
+            })
+            if (viewing && msg.senderId !== me) {
+              api.patch(`/api/conversations/${e.conversationId}/read`).catch(() => {})
+            }
+          }
+          if (msg.senderId !== me && activeConversationRef.current !== e.conversationId && (msg.type === 'text' || msg.type === 'voice')) {
+            // Offers/counters/system notes already arrive as their own notification toast.
+            const convo = conversationsRef.current.find((c) => c.id === e.conversationId)
+            const from = convo ? sellersRef.current[convo.otherPartyId]?.name : undefined
+            toast.info(from ? `New message from ${from}` : 'New message')
+          }
+        } else if (e.type === 'notification') {
+          const n = mapNotification(e.notification)
+          setNotifications((prev) => (prev.some((x) => x.id === n.id) ? prev : [n, ...prev]))
+          setUnreadNotifications((c) => c + 1)
+          toast.info(n.title)
+        }
+      },
+      () => {
+        // Back online after a drop: catch up on anything missed.
+        refreshConversations().catch(() => {})
+        api
+          .get<{ notifications: any[]; unreadCount: number }>('/api/notifications')
+          .then((r) => {
+            setNotifications(r.notifications.map(mapNotification))
+            setUnreadNotifications(r.unreadCount)
+          })
+          .catch(() => {})
+      },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, currentUser?.id])
+
+  const getListing = useCallback(
+    (id: string | undefined) => (id ? listings.find((l) => l.id === id) ?? extraListings[id] : undefined),
+    [listings, extraListings],
+  )
+  const getEvent = useCallback(
+    (id: string | undefined) => (id ? events.find((e) => e.id === id) ?? extraEvents[id] : undefined),
+    [events, extraEvents],
+  )
+  const loadListing = useCallback(
+    async (id: string) => {
+      const key = `l:${id}`
+      if (requestedIds.current.has(key)) return
+      requestedIds.current.add(key)
+      try {
+        const res = await api.get<{ listing: any; seller: any }>(`/api/listings/${id}`)
+        mergeSellers([mapSeller(res.seller)])
+        setExtraListings((prev) => ({ ...prev, [id]: mapListing(res.listing) }))
+      } catch (err) {
+        // Genuinely gone (removed/deleted) — callers show their own "no longer available".
+        requestedIds.current.delete(key)
+        if (!(err instanceof ApiError && err.status === 404)) console.error('load listing failed', err)
+      }
+    },
+    [mergeSellers],
+  )
+  const loadEvent = useCallback(
+    async (id: string) => {
+      const key = `e:${id}`
+      if (requestedIds.current.has(key)) return
+      requestedIds.current.add(key)
+      try {
+        const res = await api.get<{ event: any; organizer: any; interestedCount: number; isInterested: boolean }>(
+          `/api/events/${id}`,
+        )
+        mergeSellers([mapSeller(res.organizer)])
+        setExtraEvents((prev) => ({
+          ...prev,
+          [id]: mapEvent({ ...res.event, interestedCount: res.interestedCount, isInterested: res.isInterested }),
+        }))
+      } catch (err) {
+        requestedIds.current.delete(key)
+        if (!(err instanceof ApiError && err.status === 404)) console.error('load event failed', err)
+      }
+    },
+    [mergeSellers],
+  )
+
+  // Every conversation should be able to show what it's about, even once the item is sold
+  // or the event has passed.
+  useEffect(() => {
+    for (const c of conversations) {
+      if (c.listingId && !listings.some((l) => l.id === c.listingId) && !extraListings[c.listingId]) loadListing(c.listingId)
+      if (c.eventId && !events.some((e) => e.id === c.eventId) && !extraEvents[c.eventId]) loadEvent(c.eventId)
+    }
+  }, [conversations, listings, events, extraListings, extraEvents, loadListing, loadEvent])
+
   const sellers = useMemo(() => Object.values(sellersById), [sellersById])
 
   const value: AppContextValue = {
@@ -844,6 +1250,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     statusGroups,
     canPostStatus,
     userLocation,
+    needsProfile,
+    getListing,
+    loadListing,
+    getEvent,
+    loadEvent,
     checkPhone,
     signup,
     login,
@@ -862,12 +1273,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ensureEventConversation,
     renewListing,
     boostListing,
+    editListing,
     featureListing,
     pinListingCategory,
     bannerListing,
     updateListingStatus,
     submitRating,
     updateBusinessProfile,
+    updateName,
     purchaseVerificationPriority,
     purchaseBuyerRequestPriority,
     sendMessage,
@@ -879,6 +1292,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     addBuyerRequest,
     loadThread,
     refreshListings,
+    lowData,
+    setLowData,
+    offline,
+    notifications,
+    unreadNotifications,
+    markAllNotificationsRead,
+    markNotificationRead,
+    setActiveConversation,
+    listingsHasMore,
+    listingsLoadingMore,
+    loadMoreListings,
     refreshEvents,
     refreshStatuses,
     postStatus,

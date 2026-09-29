@@ -8,7 +8,7 @@ import { useApp } from '../context/AppContext'
 import { EVENT_CATEGORY_META, type EventCategory } from '../types'
 import { distanceKm, RADIUS_STEPS, nextRadius } from '../lib/geo'
 import { formatDistance, formatEventWhen, formatPrice } from '../lib/format'
-import { isImageUrl } from '../lib/media'
+import { isImageUrl, mediaSrc } from '../lib/media'
 
 const CATEGORIES = Object.keys(EVENT_CATEGORY_META) as EventCategory[]
 
@@ -22,7 +22,7 @@ function ticketSummary(tiers: { name: string; price: number }[]): string {
 
 export default function Events() {
   const navigate = useNavigate()
-  const { events, sellers, userLocation } = useApp()
+  const { events, sellers, userLocation, lowData } = useApp()
   const [when, setWhen] = useState<'upcoming' | 'past'>('upcoming')
   const [categories, setCategories] = useState<EventCategory[]>([])
   const [radiusKm, setRadiusKm] = useState(25)
@@ -69,7 +69,7 @@ export default function Events() {
           <button
             key={w}
             onClick={() => setWhen(w)}
-            className={`tap-flash rounded-full px-3 py-1.5 text-xs font-medium capitalize transition active:scale-95 ${
+            className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium capitalize transition active:scale-95 ${
               when === w ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
             }`}
           >
@@ -85,7 +85,7 @@ export default function Events() {
             <button
               key={c}
               onClick={() => toggleCategory(c)}
-              className={`tap-flash flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs transition active:scale-95 ${
+              className={`tap-flash flex shrink-0 items-center gap-1 min-h-9 rounded-full px-3.5 py-1.5 text-xs transition active:scale-95 ${
                 active ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
               }`}
             >
@@ -101,7 +101,7 @@ export default function Events() {
           <button
             key={r}
             onClick={() => setRadiusKm(r)}
-            className={`tap-flash shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+            className={`tap-flash shrink-0 min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
               radiusKm === r
                 ? 'bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)]'
                 : 'bg-surface-2 text-muted'
@@ -112,7 +112,7 @@ export default function Events() {
         ))}
         <button
           onClick={() => setRadiusKm(999)}
-          className={`tap-flash shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+          className={`tap-flash shrink-0 min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
             radiusKm === 999
               ? 'bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)]'
               : 'bg-surface-2 text-muted'
@@ -127,22 +127,33 @@ export default function Events() {
           <>
             <EmptyState
               icon={CalendarDays}
-              title={when === 'upcoming' ? 'No upcoming events nearby' : 'No past events to show'}
-              hint={
+              title={
                 when === 'upcoming'
-                  ? nextRadius(radiusKm)
-                    ? undefined
-                    : 'Try a different category, or host your own.'
-                  : undefined
+                  ? categories.length
+                    ? 'No upcoming events in these categories'
+                    : 'No upcoming events nearby'
+                  : 'No past events to show'
               }
+              hint={when === 'upcoming' ? 'Try a wider area, clear the filters, or host your own event.' : undefined}
             />
-            {when === 'upcoming' && nextRadius(radiusKm) && (
-              <div className="flex justify-center">
-                <button onClick={expandRadius} className="btn-primary px-4 py-1.5 text-xs">
-                  Expand search to {nextRadius(radiusKm)} km
+            {/* Always give a way forward from an empty list, not a dead end. */}
+            <div className="flex flex-wrap justify-center gap-2">
+              {when === 'upcoming' && nextRadius(radiusKm) && (
+                <button onClick={expandRadius} className="btn-primary min-h-11 px-4 text-sm">
+                  Search within {nextRadius(radiusKm)} km
                 </button>
-              </div>
-            )}
+              )}
+              {categories.length > 0 && (
+                <button onClick={() => setCategories([])} className="btn-secondary min-h-11 px-4 text-sm">
+                  Clear categories
+                </button>
+              )}
+              {when === 'upcoming' && (
+                <button onClick={() => navigate('/events/new')} className="btn-secondary min-h-11 px-4 text-sm">
+                  Host an event
+                </button>
+              )}
+            </div>
           </>
         )}
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 md:gap-3 lg:grid-cols-3">
@@ -156,10 +167,10 @@ export default function Events() {
               className="card-elevated card-interactive flex w-full items-center gap-3 rounded-2xl bg-surface-2 p-3 text-left"
             >
               <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-bg text-2xl">
-                {isImageUrl(event.images[0]) ? (
-                  <img src={event.images[0]} alt="" className="h-full w-full object-cover" />
+                {isImageUrl(event.images[0]) && !lowData ? (
+                  <img src={mediaSrc(event.images[0], 'thumb')} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
                 ) : (
-                  event.images[0] ?? meta.emoji
+                  (isImageUrl(event.images[0]) ? null : event.images[0]) ?? meta.emoji
                 )}
               </div>
               <div className="min-w-0 flex-1">
@@ -179,16 +190,16 @@ export default function Events() {
                 <p className="flex items-center gap-1 truncate text-[11px] text-muted">
                   <MapPin size={10} className="shrink-0" /> {event.venueName} · {formatDistance(distance)}
                 </p>
-                <div className="mt-1 flex items-center gap-2 text-[11px]">
-                  <span className="flex items-center gap-1 font-medium text-accent">
+                <div className="mt-1 flex min-w-0 items-center gap-2 text-[11px]">
+                  <span className="flex shrink-0 items-center gap-1 whitespace-nowrap font-medium text-accent">
                     <Ticket size={11} /> {ticketSummary(event.ticketTiers)}
                   </span>
                   {event.interestedCount > 0 && (
-                    <span className="flex items-center gap-1 text-muted">
+                    <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted">
                       <Users size={11} /> {event.interestedCount} interested
                     </span>
                   )}
-                  {organizer && <span className="truncate text-muted">· by {organizer.name}</span>}
+                  {organizer && <span className="min-w-0 truncate text-muted">· by {organizer.name}</span>}
                 </div>
               </div>
             </button>

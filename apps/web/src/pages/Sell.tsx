@@ -1,5 +1,7 @@
-import { useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { Camera, Images, CheckCircle2, Loader2, X, Plus } from 'lucide-react'
+import { useState } from 'react'
+import { CheckCircle2, Loader2 } from 'lucide-react'
+import PhotoSlot from '../components/PhotoSlot'
+import Field from '../components/Field'
 import { useNavigate } from 'react-router-dom'
 import BottomNav from '../components/BottomNav'
 import TopBar from '../components/TopBar'
@@ -7,6 +9,11 @@ import { useApp } from '../context/AppContext'
 import { CATEGORY_META, type Category, type Condition } from '../types'
 import { compressImageFile } from '../lib/media'
 import { formatPrice } from '../lib/format'
+import { useToast } from '../components/Toast'
+import { errorMessage } from '../lib/api'
+import { useT } from '../lib/i18n'
+import { CategoryHint, DescriptionPrompts, PhotoAssist, PriceGuideCard } from '../components/ListingHelp'
+import { VoiceNoteRecorder } from '../components/VoiceNote'
 
 const STEPS = ['Photos', 'Details', 'Location', 'Publish']
 const MAX_PHOTOS = 3
@@ -17,6 +24,7 @@ const MAX_PHOTOS = 3
 const LISTING_FEE_PER_MONTH = 30
 
 export default function Sell() {
+  const toast = useToast()
   const navigate = useNavigate()
   const { publishListing, userLocation } = useApp()
   const [step, setStep] = useState(0)
@@ -30,6 +38,8 @@ export default function Sell() {
   const [negotiable, setNegotiable] = useState(true)
   const [condition, setCondition] = useState<Condition>('used')
   const [quantity, setQuantity] = useState('1')
+  const [voiceNote, setVoiceNote] = useState<string | null>(null)
+  const t = useT()
 
   const [approxLocation, setApproxLocation] = useState(true)
   const [duration, setDuration] = useState(3)
@@ -48,12 +58,12 @@ export default function Sell() {
       await new Promise((r) => setTimeout(r, 700))
       const created = await publishListing({
         category,
-        title: title || 'Untitled listing',
+        title: title.trim() || 'Untitled listing',
         description,
-        price: Number(price) || 0,
+        price: Math.max(0, Math.round(Number(price) || 0)),
         negotiable,
         condition,
-        quantity: Number(quantity) || 1,
+        quantity: Math.max(1, Math.round(Number(quantity) || 1)),
         // Real device location when GPS has resolved; only jittered around the Lumley
         // default as a placeholder while it hasn't (or on a browser/device with no GPS) —
         // see lib/useLiveLocation.ts.
@@ -62,12 +72,13 @@ export default function Sell() {
         approxLocation,
         durationMonths: duration,
         images: filledPhotos.length > 0 ? filledPhotos : [CATEGORY_META[category].emoji],
+        ...(voiceNote ? { voiceNote } : {}),
       })
       setPublishedId(created.id)
       setStep(3)
     } catch (err) {
       console.error('publish failed', err)
-      alert('Could not publish the listing — check the API server is running and try again.')
+      toast.error(errorMessage(err, 'Could not publish your listing — please try again.'))
     } finally {
       setPublishing(false)
     }
@@ -80,6 +91,7 @@ export default function Sell() {
     setTitle('')
     setDescription('')
     setPrice('')
+    setVoiceNote(null)
     setPublishedId(null)
   }
 
@@ -87,7 +99,7 @@ export default function Sell() {
     <div className="flex min-h-dvh flex-col">
       <TopBar />
       <div className="px-4 pb-3 pt-1">
-        <h1 className="text-xl font-display font-bold tracking-tight text-ink">List a product</h1>
+        <h1 className="text-xl font-display font-bold tracking-tight text-ink">{t('sell.heading')}</h1>
         <div className="mt-3 flex items-center gap-1">
           {STEPS.map((s, i) => (
             <div key={s} className="flex min-w-0 flex-1 flex-col items-center gap-1">
@@ -132,16 +144,38 @@ export default function Sell() {
             <button
               onClick={goDetails}
               disabled={filledPhotos.length === 0}
-              className="btn-primary mt-4 w-full text-sm"
+              className="btn-primary mt-4 min-h-12 w-full text-sm"
             >
-              Continue
+              {t('sell.continue')}
             </button>
+            {filledPhotos.length === 0 && (
+              <p className="mt-2 text-center text-xs text-muted">Add at least one photo to continue.</p>
+            )}
           </div>
         )}
 
         {step === 1 && (
           <div className="space-y-3">
-            <Field label="Category">
+            <PhotoAssist
+              photo={filledPhotos[0]}
+              onSuggest={(sug) => {
+                if (sug.title) setTitle(sug.title)
+                if (sug.category) setCategory(sug.category)
+                if (sug.condition) setCondition(sug.condition)
+                if (sug.description) setDescription(sug.description)
+              }}
+            />
+            <Field label={t('sell.title')}>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                maxLength={120}
+                placeholder="e.g. Samsung Galaxy A14, 64GB"
+                autoCapitalize="sentences"
+                className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
+              />
+            </Field>
+            <Field label={t('sell.category')}>
               <select
                 value={category}
                 onChange={(e) => setCategory(e.target.value as Category)}
@@ -153,71 +187,87 @@ export default function Sell() {
                   </option>
                 ))}
               </select>
+              <CategoryHint title={title} category={category} onPick={setCategory} />
             </Field>
-            <Field label="Title">
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
-              />
-            </Field>
-            <Field label="Description">
+            <Field label={t('sell.description')}>
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={3}
+                maxLength={4000}
+                placeholder="Condition, what's included, where to collect…"
                 className="w-full resize-none rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
               />
             </Field>
+            <DescriptionPrompts
+              category={category}
+              description={description}
+              onAdd={(line) => setDescription((d) => (d.trim() ? `${d.trimEnd()}\n${line} ` : `${line} `))}
+            />
+            <VoiceNoteRecorder value={voiceNote} onChange={setVoiceNote} label={t('sell.voice')} />
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Price (NLe)">
+              <Field label={t('sell.price')}>
                 <input
                   type="number"
+                  inputMode="numeric"
+                  min={0}
+                  step={1}
+                  placeholder="0"
                   value={price}
-                  onChange={(e) => setPrice(e.target.value)}
+                  // Whole leones only — decimals were rejected by the API with no explanation.
+                  onChange={(e) => setPrice(e.target.value.replace(/[^\d]/g, ''))}
                   className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
                 />
               </Field>
-              <Field label="Quantity">
+              <Field label={t('sell.quantity')}>
                 <input
                   type="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
                   value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
+                  onChange={(e) => setQuantity(e.target.value.replace(/[^\d]/g, ''))}
                   className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none transition focus:border-accent focus:shadow-[0_0_0_3px_rgba(36,91,50,0.15)]"
                 />
               </Field>
             </div>
-            <Field label="Condition">
+            <PriceGuideCard category={category} title={title} price={price} onUse={(p) => setPrice(String(p))} />
+            <Field label={t('sell.condition')} group>
               <div className="flex gap-2">
                 {(['new', 'used', 'refurbished'] as Condition[]).map((c) => (
                   <button
                     key={c}
                     onClick={() => setCondition(c)}
-                    className={`tap-flash rounded-full px-3 py-1.5 text-xs capitalize transition active:scale-95 ${
+                    type="button"
+                    aria-pressed={condition === c}
+                    className={`tap-flash min-h-10 rounded-full px-4 text-sm capitalize transition active:scale-95 ${
                       condition === c ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
                     }`}
                   >
-                    {c}
+                    {t(`cond.${c}`)}
                   </button>
                 ))}
               </div>
             </Field>
-            <label className="flex items-center gap-2 text-sm text-ink">
+            <label className="flex min-h-11 items-center gap-3 text-sm text-ink">
               <input
                 type="checkbox"
                 checked={negotiable}
                 onChange={(e) => setNegotiable(e.target.checked)}
-                className="h-4 w-4 accent-[#245b32]"
+                className="h-5 w-5 accent-[#245b32]"
               />
-              Price is negotiable
+              {t('sell.negotiable')}
             </label>
             <button
               onClick={goLocation}
-              disabled={!title || !price}
-              className="btn-primary mt-2 w-full text-sm"
+              disabled={!title.trim() || price === ''}
+              className="btn-primary mt-2 min-h-12 w-full text-sm"
             >
-              Continue
+              {t('sell.continue')}
             </button>
+            {(!title.trim() || price === '') && (
+              <p className="text-center text-xs text-muted">Add a title and a price to continue.</p>
+            )}
           </div>
         )}
 
@@ -314,101 +364,6 @@ export default function Sell() {
       </div>
 
       <BottomNav />
-    </div>
-  )
-}
-
-// A single photo slot in the Sell flow's grid. Empty: tapping opens a small action sheet
-// with "Take Photo" (opens the device camera directly via the `capture` attribute on
-// mobile) and "Choose from Gallery" (a plain file picker) — both are real hidden
-// <input type="file"> elements; the visible buttons are just styled triggers for them.
-// Filled: shows the compressed photo with a remove button; tapping the photo itself
-// re-opens the action sheet to replace it.
-function PhotoSlot({
-  photo,
-  onPick,
-  onRemove,
-}: {
-  photo: string | null
-  onPick: (file: File) => void
-  onRemove: () => void
-}) {
-  const [open, setOpen] = useState(false)
-  const cameraInputRef = useRef<HTMLInputElement>(null)
-  const galleryInputRef = useRef<HTMLInputElement>(null)
-
-  const handleFile = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    e.target.value = '' // allow re-selecting the same file next time
-    setOpen(false)
-    if (file) onPick(file)
-  }
-
-  return (
-    <div className="relative">
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={handleFile}
-      />
-      <input ref={galleryInputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
-
-      {photo ? (
-        <div className="group relative aspect-square w-full overflow-hidden rounded-xl border border-border bg-surface-2">
-          <img src={photo} alt="Listing photo" className="h-full w-full object-cover" />
-          <button
-            onClick={() => setOpen((o) => !o)}
-            aria-label="Replace photo"
-            className="tap-flash absolute inset-0 flex items-center justify-center bg-bg/0 transition-colors active:bg-bg/30"
-          />
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onRemove()
-            }}
-            aria-label="Remove photo"
-            className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-bg/70 text-ink backdrop-blur transition-transform active:scale-90"
-          >
-            <X size={13} />
-          </button>
-        </div>
-      ) : (
-        <button
-          onClick={() => setOpen((o) => !o)}
-          className="tap-flash flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border bg-surface-2 text-muted transition-transform active:scale-[0.97]"
-        >
-          <Plus size={18} />
-        </button>
-      )}
-
-      {open && (
-        <div className="absolute left-0 top-full z-10 mt-1 w-44 space-y-1 rounded-xl border border-border bg-surface p-2 shadow-xl">
-          <button
-            onClick={() => cameraInputRef.current?.click()}
-            className="tap-flash flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-ink transition-colors active:bg-surface-2"
-          >
-            <Camera size={15} className="text-accent" /> Take Photo
-          </button>
-          <button
-            onClick={() => galleryInputRef.current?.click()}
-            className="tap-flash flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-ink transition-colors active:bg-surface-2"
-          >
-            <Images size={15} className="text-accent" /> Choose from Gallery
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-muted">{label}</label>
-      {children}
     </div>
   )
 }

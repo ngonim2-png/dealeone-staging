@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Flag } from 'lucide-react'
+import { Flag, Loader2 } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { api } from '../../lib/api'
-import { timeAgo } from '../../lib/format'
+import { relativeTime } from '../../lib/format'
 import { REPORT_REASON_LABELS, type ReportReason, type ReportStatus } from '../../types'
+import LoadError from '../../components/LoadError'
 
 interface AdminReportRow {
   report: {
@@ -41,10 +42,12 @@ const STATUS_STYLE: Record<ReportStatus, string> = {
 
 export default function AdminReports() {
   const [rows, setRows] = useState<AdminReportRow[] | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = () => {
-    api.get<{ reports: AdminReportRow[] }>('/api/admin/reports').then((res) => setRows(res.reports))
+    setLoadError(false)
+    api.get<{ reports: AdminReportRow[] }>('/api/admin/reports').then((res) => setRows(res.reports)).catch(() => setLoadError(true))
   }
 
   useEffect(load, [])
@@ -69,6 +72,12 @@ export default function AdminReports() {
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="Reports" />
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {loadError && <LoadError onRetry={load} />}
+        {!rows && !loadError && (
+          <div className="flex justify-center py-10 text-muted">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        )}
         {rows && rows.length === 0 && (
           <EmptyState icon={Flag} title="No reports" hint="Scam/fraud reports will show up here." />
         )}
@@ -107,7 +116,7 @@ export default function AdminReports() {
                     {targetTypeLabel}: {targetLabel}
                   </p>
                   <p className="text-xs text-muted">
-                    Reported by {reporter.name} · {timeAgo(report.createdAt)} ago
+                    Reported by {reporter.name} · {relativeTime(report.createdAt)}
                   </p>
                   {report.details && <p className="mt-1 text-xs text-ink">{report.details}</p>}
                 </div>

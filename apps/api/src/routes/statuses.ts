@@ -5,6 +5,7 @@ import { db } from '../db/client'
 import { statuses, statusViews, users } from '../db/schema'
 import { requireAuth } from '../lib/auth'
 import { isEligibleForStatus } from '../lib/statusEligibility'
+import { storeDataUrl } from '../lib/media'
 
 export const statusesRouter = Router()
 
@@ -77,7 +78,7 @@ const createStatusSchema = z.object({
     .string()
     .min(1)
     .max(3_000_000)
-    .refine((v) => v.startsWith('data:image'), { message: 'imageUrl must be a data:image URL' }),
+    .refine((v) => /^data:image\/(jpeg|jpg|png|webp);base64,/.test(v), { message: 'imageUrl must be a JPEG/PNG/WebP photo' }),
   caption: z.string().max(200).default(''),
 })
 
@@ -99,7 +100,7 @@ statusesRouter.post('/', requireAuth, async (req, res) => {
   const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000)
   const [created] = await db
     .insert(statuses)
-    .values({ userId: req.userId!, imageUrl: parsed.data.imageUrl, caption: parsed.data.caption, expiresAt })
+    .values({ userId: req.userId!, imageUrl: await storeDataUrl(parsed.data.imageUrl, req.userId!), caption: parsed.data.caption, expiresAt })
     .returning()
   res.status(201).json({ status: created })
 })

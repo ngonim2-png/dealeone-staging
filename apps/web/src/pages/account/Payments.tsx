@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { CreditCard } from 'lucide-react'
+import { CreditCard, Loader2 } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { api } from '../../lib/api'
-import { formatPrice, timeAgo } from '../../lib/format'
+import { formatPrice, relativeTime } from '../../lib/format'
+import LoadError from '../../components/LoadError'
 
 // Billing history — reads the listingPayments ledger built across the monetization round
 // (listing fee renewals, Boost/Featured/Top-Placement/Banner purchases, the two
@@ -33,20 +34,32 @@ const KIND_LABELS: Record<string, string> = {
 
 export default function Payments() {
   const [rows, setRows] = useState<PaymentRow[] | null>(null)
+  const [loadError, setLoadError] = useState(false)
 
-  useEffect(() => {
-    api.get<{ payments: PaymentRow[] }>('/api/users/me/payments').then((res) => setRows(res.payments))
-  }, [])
+  const load = () => {
+    setLoadError(false)
+    api
+      .get<{ payments: PaymentRow[] }>('/api/users/me/payments')
+      .then((res) => setRows(res.payments))
+      .catch(() => setLoadError(true))
+  }
+  useEffect(load, [])
 
   return (
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="Payments" />
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {loadError && <LoadError onRetry={load} />}
+        {!rows && !loadError && (
+          <div className="flex justify-center py-10 text-muted">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        )}
         {rows && rows.length === 0 && (
           <EmptyState
             icon={CreditCard}
             title="No payments yet"
-            hint="Listing fees and paid promotions will show up here (all simulated charges — no real payment gateway yet)."
+            hint="Listing fees and promotions you pay for will show up here."
           />
         )}
         {rows?.map(({ payment, listingTitle }) => (
@@ -54,7 +67,7 @@ export default function Payments() {
             <div className="min-w-0">
               <p className="text-sm font-medium text-ink">{KIND_LABELS[payment.kind] ?? payment.kind}</p>
               <p className="truncate text-xs text-muted">
-                {listingTitle ?? 'Account-wide'} · {timeAgo(payment.createdAt)} ago
+                {listingTitle ?? 'Account-wide'} · {relativeTime(payment.createdAt)}
               </p>
             </div>
             <p className="shrink-0 text-sm font-semibold text-ink">{formatPrice(payment.amount)}</p>

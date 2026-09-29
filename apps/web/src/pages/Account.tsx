@@ -14,6 +14,9 @@ import {
   ShieldHalf,
   LogOut,
   Megaphone,
+  BarChart3,
+  BellRing,
+  Gift,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import TopBar from '../components/TopBar'
@@ -21,11 +24,13 @@ import BottomNav from '../components/BottomNav'
 import Rating from '../components/Rating'
 import { useApp } from '../context/AppContext'
 import { VERIFICATION_LABELS } from '../types'
+import { useT } from '../lib/i18n'
 
 export default function Account() {
   const navigate = useNavigate()
   const { currentUser, listings, events, offers, wishlist, buyerRequests, reports, disputes, logout } = useApp()
   const [confirmingLogout, setConfirmingLogout] = useState(false)
+  const t = useT()
 
   if (!currentUser) return null // App.tsx only renders this route once bootstrap is ready
 
@@ -35,36 +40,39 @@ export default function Account() {
   const rows = [
     {
       icon: ListChecks,
-      label: 'My Listings',
+      label: t('account.listings'),
       sub: `${myListingsCount} listing${myListingsCount !== 1 ? 's' : ''}`,
       to: '/account/listings',
     },
+    { icon: BarChart3, label: t('account.insights'), sub: 'Views, saves and chats per listing', to: '/account/insights' },
     {
       icon: CalendarDays,
-      label: 'My Events',
+      label: t('account.events'),
       sub: `${myEventsCount} hosted`,
       to: '/account/events',
     },
-    { icon: Tags, label: 'My Offers', sub: `${offers.length} sent`, to: '/account/offers' },
-    { icon: Heart, label: 'My Wishlist', sub: `${wishlist.length} saved`, to: '/account/wishlist' },
+    { icon: Tags, label: t('account.offers'), sub: `${offers.length} sent`, to: '/account/offers' },
+    { icon: Heart, label: t('account.wishlist'), sub: `${wishlist.length} saved`, to: '/account/wishlist' },
+    { icon: BellRing, label: t('account.searches'), sub: 'Get alerted when a match is posted', to: '/account/searches' },
     {
       icon: Search,
-      label: 'My Buyer Requests',
+      label: t('account.requests'),
       sub: `${buyerRequests.length} active`,
       to: '/account/requests',
     },
-    { icon: ShieldCheck, label: 'Verification', sub: VERIFICATION_LABELS[currentUser.verificationLevel], to: '/account/verification' },
-    { icon: Megaphone, label: 'Promote', sub: 'Boost listings, priority access', to: '/promote' },
+    { icon: Gift, label: t('account.invite'), sub: 'Earn free boosts', to: '/account/invite' },
+    { icon: ShieldCheck, label: t('account.verification'), sub: VERIFICATION_LABELS[currentUser.verificationLevel], to: '/account/verification' },
+    { icon: Megaphone, label: t('account.promote'), sub: 'Boost listings, priority access', to: '/promote' },
     {
       icon: Flag,
-      label: 'My Reports',
+      label: t('account.reports'),
       sub: `${reports.length + disputes.length} submitted`,
       to: '/account/reports',
     },
-    { icon: CreditCard, label: 'Payments', sub: 'Billing history', to: '/account/payments' },
+    { icon: CreditCard, label: t('account.payments'), sub: 'Billing history', to: '/account/payments' },
     {
       icon: Settings,
-      label: 'Settings',
+      label: t('account.settings'),
       sub: currentUser.isBusiness ? `Business · ${currentUser.businessName}` : 'Business account',
       to: '/account/settings',
     },
@@ -121,7 +129,7 @@ export default function Account() {
             <LogOut size={16} />
           </span>
           <span className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-bad">Log out</p>
+            <p className="text-sm font-medium text-bad">{t('account.logout')}</p>
           </span>
         </button>
       </div>

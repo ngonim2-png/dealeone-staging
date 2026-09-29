@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ShieldCheck, Zap } from 'lucide-react'
+import { ShieldCheck, Zap, Loader2 } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { api } from '../../lib/api'
-import { timeAgo } from '../../lib/format'
+import { relativeTime } from '../../lib/format'
+import LoadError from '../../components/LoadError'
 
 interface AdminVerificationRow {
   request: {
@@ -23,12 +24,14 @@ interface AdminVerificationRow {
 // and resolves via PATCH /verification-requests/:id.
 export default function AdminVerification() {
   const [rows, setRows] = useState<AdminVerificationRow[] | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = () => {
+    setLoadError(false)
     api.get<{ verificationRequests: AdminVerificationRow[] }>('/api/admin/verification-requests?status=pending').then((res) =>
       setRows(res.verificationRequests),
-    )
+    ).catch(() => setLoadError(true))
   }
 
   useEffect(load, [])
@@ -49,6 +52,12 @@ export default function AdminVerification() {
     <div className="flex min-h-dvh flex-col">
       <BackHeader title="Verification Requests" />
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {loadError && <LoadError onRetry={load} />}
+        {!rows && !loadError && (
+          <div className="flex justify-center py-10 text-muted">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        )}
         {rows && rows.length === 0 && (
           <EmptyState icon={ShieldCheck} title="No pending requests" hint="Seller verification requests will show up here." />
         )}
@@ -66,7 +75,7 @@ export default function AdminVerification() {
                 </p>
                 <p className="text-xs text-muted">
                   {requester.phone} · currently level {requester.verificationLevel} → requesting level{' '}
-                  {request.targetLevel} · {timeAgo(request.createdAt)} ago
+                  {request.targetLevel} · {relativeTime(request.createdAt)}
                 </p>
                 {request.note && <p className="mt-1 text-xs text-ink">{request.note}</p>}
               </div>

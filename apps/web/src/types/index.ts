@@ -132,6 +132,7 @@ export interface Listing {
   banner: boolean
   bannerUntil?: string
   images: string[] // emoji placeholders standing in for photos
+  voiceNoteUrl?: string // seller's spoken description (/api/media/…), if they recorded one
   dealOriginalPrice?: number
   dealValidUntil?: string
 }
@@ -230,6 +231,11 @@ export interface Conversation {
   listingId?: string
   eventId?: string
   sellerId: string
+  // Which side of the thread the signed-in user is on, and who's on the other side (the
+  // seller/organizer when I'm the buyer; the buyer when I'm the seller). Use otherPartyId —
+  // not sellerId — for the name/avatar shown in chat.
+  role: 'buyer' | 'seller'
+  otherPartyId: string
   lastMessageAt: string
   unreadCount: number
   messages: ChatMessage[]
@@ -349,5 +355,16 @@ export interface Dispute {
   reason: DisputeReason
   details: string
   status: DisputeStatus
+  createdAt: string
+}
+
+// The bell: offer activity, price drops, saved-search matches, referral rewards.
+export interface AppNotification {
+  id: string
+  type: 'offer' | 'offer_update' | 'price_drop' | 'saved_search' | 'referral' | 'system'
+  title: string
+  body: string
+  url?: string
+  read: boolean
   createdAt: string
 }

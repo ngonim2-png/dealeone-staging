@@ -13,7 +13,7 @@ import { formatEventWhen, formatPrice, timeAgo } from '../lib/format'
 
 export default function Chats() {
   const navigate = useNavigate()
-  const { conversations, listings, events, sellers, refreshStatuses } = useApp()
+  const { conversations, getListing, getEvent, sellers, refreshStatuses } = useApp()
   const [composerOpen, setComposerOpen] = useState(false)
   const [viewerUserId, setViewerUserId] = useState<string | null>(null)
 
@@ -43,11 +43,12 @@ export default function Chats() {
           {conversations
             .filter((c) => c.messages.length > 0)
             .map((c) => {
-              const listing = c.listingId ? listings.find((l) => l.id === c.listingId) : undefined
-              const event = c.eventId ? events.find((e) => e.id === c.eventId) : undefined
-              const seller = sellers.find((s) => s.id === c.sellerId)
+              const listing = getListing(c.listingId)
+              const event = getEvent(c.eventId)
+              // The other person in the thread (buyer, when I'm the seller).
+              const seller = sellers.find((s) => s.id === c.otherPartyId)
               const last = c.messages[c.messages.length - 1]
-              if ((!listing && !event) || !seller || !last) return null
+              if (!seller || !last) return null
               return (
                 <button
                   key={c.id}
@@ -68,7 +69,14 @@ export default function Chats() {
                       <span className="shrink-0 text-[11px] text-muted">{timeAgo(c.lastMessageAt)}</span>
                     </div>
                     <p className="truncate text-xs text-accent">
-                      {listing ? (
+                      {c.role === 'seller' && (
+                        <span className="mr-1 rounded-full bg-accent/10 px-1.5 py-px text-[10px] font-semibold text-accent">
+                          Buyer
+                        </span>
+                      )}
+                      {!listing && !event ? (
+                        <span className="text-muted">Item no longer available</span>
+                      ) : listing ? (
                         <>
                           {CATEGORY_META[listing.category].emoji} {listing.title} · {formatPrice(listing.price)}
                         </>

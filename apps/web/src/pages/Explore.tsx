@@ -8,6 +8,9 @@ import {
   Megaphone,
   Map as MapIcon,
   List as ListIcon,
+  Mic,
+  BellPlus,
+  Check,
 } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import TopBar from '../components/TopBar'
@@ -15,19 +18,36 @@ import BottomNav from '../components/BottomNav'
 import MapView from '../components/MapView'
 import FilterSheet from '../components/FilterSheet'
 import ListingCard from '../components/ListingCard'
+import LoadMore from '../components/LoadMore'
 import { useApp } from '../context/AppContext'
 import { CATEGORY_META, type Category } from '../types'
 import { applyFilters, rank, type RankMode } from '../lib/filters'
 import { DEFAULT_FILTERS } from '../lib/filters'
 import { nextRadius, RADIUS_STEPS } from '../lib/geo'
 import { formatDistance, formatPrice } from '../lib/format'
-import { isImageUrl } from '../lib/media'
+import { isImageUrl, mediaSrc } from '../lib/media'
 import { parseQuery } from '../lib/aiParse'
-import { api } from '../lib/api'
+import { api, errorMessage } from '../lib/api'
+import { useT } from '../lib/i18n'
+import { listen, speechSupported, type ListenHandle } from '../lib/speech'
+import { useToast } from '../components/Toast'
 import { mapListing } from '../lib/mappers'
 import type { Listing } from '../types'
 
 const CATEGORIES = Object.keys(CATEGORY_META) as Category[]
+
+// Opening a saved search (account/SavedSearches.tsx) lands here with its terms in the URL:
+// /?view=list&q=blender&cats=appliances,home_living&max=900&r=10
+function filtersFromParams(params: URLSearchParams) {
+  const f = { ...DEFAULT_FILTERS }
+  const cats = (params.get('cats') ?? '').split(',').filter((c): c is Category => c in CATEGORY_META)
+  if (cats.length) f.categories = cats
+  const max = Number(params.get('max'))
+  if (Number.isFinite(max) && max > 0) f.maxPrice = max
+  const r = Number(params.get('r'))
+  if (Number.isFinite(r) && r > 0) f.radiusKm = r
+  return f
+}
 
 const RANK_MODES: { id: RankMode; label: string }[] = [
   { id: 'closest', label: 'Closest' },
@@ -57,6 +77,7 @@ const LIST_KINDS: { id: ListKind; label: string }[] = [
 // here with ?view=list (see App.tsx) so nothing that linked to it breaks.
 function BannerCarousel({ lat, lng }: { lat: number; lng: number }) {
   const navigate = useNavigate()
+  const { lowData } = useApp()
   const [banners, setBanners] = useState<Listing[] | null>(null)
 
   useEffect(() => {
@@ -78,10 +99,10 @@ function BannerCarousel({ lat, lng }: { lat: number; lng: number }) {
           className="tap-flash card-elevated card-interactive flex w-64 shrink-0 items-center gap-2 rounded-xl border border-accent/30 bg-accent/5 p-2.5 text-left"
         >
           <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-2 text-xl">
-            {isImageUrl(b.images[0]) ? (
-              <img src={b.images[0]} alt="" className="h-full w-full object-cover" />
+            {isImageUrl(b.images[0]) && !lowData ? (
+              <img src={mediaSrc(b.images[0], 'thumb')} alt="" className="h-full w-full object-cover" />
             ) : (
-              b.images[0] ?? CATEGORY_META[b.category].emoji
+              (isImageUrl(b.images[0]) ? null : b.images[0]) ?? CATEGORY_META[b.category].emoji
             )}
           </div>
           <div className="min-w-0 flex-1">
@@ -99,15 +120,22 @@ function BannerCarousel({ lat, lng }: { lat: number; lng: number }) {
 export default function Explore() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { listings, sellers, userLocation } = useApp()
+  const { listings, sellers, userLocation, listingsHasMore, listingsLoadingMore, loadMoreListings, lowData } = useApp()
   const [view, setView] = useState<'map' | 'list'>(searchParams.get('view') === 'list' ? 'list' : 'map')
-  const [filters, setFilters] = useState(DEFAULT_FILTERS)
+  const [filters, setFilters] = useState(() => filtersFromParams(searchParams))
   const [sheetOpen, setSheetOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [recenterTick, setRecenterTick] = useState(0)
   const carouselRef = useRef<HTMLDivElement>(null)
 
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => searchParams.get('q') ?? '')
+  const t = useT()
+  const toast = useToast()
+  const [listening, setListening] = useState(false)
+  const listenRef = useRef<ListenHandle | null>(null)
+  // Remembers what was saved so the button flips to "Saved" until the search changes.
+  const [savedKey, setSavedKey] = useState<string | null>(null)
+  const [savingSearch, setSavingSearch] = useState(false)
   const [mode, setMode] = useState<'search' | 'ai'>('search')
   const [rankMode, setRankMode] = useState<RankMode>('closest')
   const [listKind, setListKind] = useState<ListKind>('all')
@@ -232,8 +260,14 @@ export default function Explore() {
   const onCarouselScroll = () => {
     const el = carouselRef.current
     if (!el) return
-    const idx = Math.round(el.scrollLeft / el.clientWidth)
-    const item = mapResults[idx]
+    // Step = one card plus the gap between cards (cards are narrower than the row, so
+    // dividing by the row width drifted and highlighted the wrong pin after a few swipes).
+    const first = el.children[0] as HTMLElement | undefined
+    const second = el.children[1] as HTMLElement | undefined
+    const step = first ? (second ? second.offsetLeft - first.offsetLeft : first.offsetWidth) : el.clientWidth
+    if (!step) return
+    const idx = Math.round(el.scrollLeft / step)
+    const item = mapResults[Math.min(idx, mapResults.length - 1)]
     if (item) setSelectedId(item.listing.id)
   }
 
@@ -241,6 +275,81 @@ export default function Explore() {
     setMode('ai')
     setView('list')
   }
+
+  // Voice search: speak, see the words appear in the box, results filter live. Stops by
+  // itself after a pause; tapping the mic again stops early.
+  const toggleVoice = () => {
+    if (listening) {
+      listenRef.current?.stop()
+      return
+    }
+    const handle = listen({
+      onText: (text) => {
+        setQuery(text)
+        setView('list')
+      },
+      onEnd: () => {
+        setListening(false)
+        listenRef.current = null
+      },
+      onError: (reason) => {
+        setListening(false)
+        if (reason === 'denied') toast.error('Allow the microphone for DEALEONE to search by voice.')
+        else if (reason === 'no-speech') toast.info("Didn't catch that — tap the mic and try again.")
+        else toast.error("Voice search isn't working right now — type instead.")
+      },
+    })
+    if (handle) {
+      listenRef.current = handle
+      setListening(true)
+    }
+  }
+  useEffect(() => () => listenRef.current?.stop(), [])
+
+  // What would be saved right now — a search needs at least a word, category or max price.
+  const savedSearchDraft = useMemo(() => {
+    const words = mode === 'ai' && query.trim() ? parseQuery(query).keywords.join(' ') : query.trim()
+    const draft = {
+      query: words.slice(0, 100),
+      categories: effectiveFilters.categories,
+      maxPrice: effectiveFilters.maxPrice,
+      radiusKm: effectiveFilters.radiusKm,
+    }
+    if (!draft.query && !draft.categories.length && draft.maxPrice == null) return null
+    return { draft, key: JSON.stringify(draft) }
+  }, [effectiveFilters, mode, query])
+
+  const saveSearch = async () => {
+    if (!savedSearchDraft || savingSearch) return
+    setSavingSearch(true)
+    try {
+      await api.post('/api/saved-searches', {
+        ...savedSearchDraft.draft,
+        lat: userLocation.lat,
+        lng: userLocation.lng,
+      })
+      setSavedKey(savedSearchDraft.key)
+      toast.success(t('explore.saveHint'))
+    } catch (err) {
+      toast.error(errorMessage(err, "Couldn't save this search — try again."))
+    } finally {
+      setSavingSearch(false)
+    }
+  }
+  const searchIsSaved = !!savedSearchDraft && savedKey === savedSearchDraft.key
+
+  const saveSearchButton = savedSearchDraft ? (
+    <button
+      onClick={saveSearch}
+      disabled={searchIsSaved || savingSearch}
+      className={`tap-flash flex shrink-0 items-center gap-1 min-h-8 rounded-full px-3 py-1 text-xs font-semibold transition active:scale-95 ${
+        searchIsSaved ? 'bg-good/15 text-good' : 'bg-accent/12 text-accent'
+      }`}
+    >
+      {searchIsSaved ? <Check size={13} /> : <BellPlus size={13} />}
+      {searchIsSaved ? t('explore.saved') : t('explore.saveSearch')}
+    </button>
+  ) : null
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -258,13 +367,23 @@ export default function Explore() {
             onKeyDown={(e) => {
               if (e.key === 'Enter') setView('list')
             }}
-            placeholder={
-              mode === 'search'
-                ? 'What are you looking for?'
-                : 'e.g. "used iPhone under NLe 15,000 within 5 km"'
-            }
+            placeholder={listening ? t('explore.listening') : mode === 'search' ? t('explore.search') : t('explore.aiSearch')}
+            aria-label="Search"
+            enterKeyHint="search"
             className="w-full bg-transparent text-sm text-ink outline-none placeholder:text-muted"
           />
+          {speechSupported && (
+            <button
+              onClick={toggleVoice}
+              aria-label={t('explore.voice')}
+              aria-pressed={listening}
+              className={`tap-flash -my-1.5 -mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition active:scale-90 ${
+                listening ? 'bg-bad text-white animate-pulse' : 'text-muted'
+              }`}
+            >
+              <Mic size={16} />
+            </button>
+          )}
         </div>
         <button
           onClick={openAskAi}
@@ -284,7 +403,7 @@ export default function Explore() {
             <button
               key={c}
               onClick={() => toggleCategory(c)}
-              className={`tap-flash flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs transition active:scale-95 ${
+              className={`tap-flash flex shrink-0 items-center gap-1 min-h-9 rounded-full px-3.5 py-1.5 text-xs transition active:scale-95 ${
                 active ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
               }`}
             >
@@ -301,7 +420,7 @@ export default function Explore() {
             <button
               key={r}
               onClick={() => setFilters((f) => ({ ...f, radiusKm: r }))}
-              className={`tap-flash shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+              className={`tap-flash shrink-0 min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
                 filters.radiusKm === r
                   ? 'bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)]'
                   : 'bg-surface-2 text-muted'
@@ -312,18 +431,18 @@ export default function Explore() {
           ))}
           <button
             onClick={() => setFilters((f) => ({ ...f, radiusKm: 999 }))}
-            className={`tap-flash shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+            className={`tap-flash shrink-0 min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
               filters.radiusKm === 999
                 ? 'bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)]'
                 : 'bg-surface-2 text-muted'
             }`}
           >
-            Anywhere
+            {t('explore.anywhere')}
           </button>
         </div>
         <button
           onClick={() => setSheetOpen(true)}
-          className="icon-btn h-8 w-8 shrink-0 bg-surface-2 text-muted"
+          className="icon-btn h-9 w-9 shrink-0 bg-surface-2 text-ink"
           aria-label="More filters"
         >
           <SlidersHorizontal size={14} />
@@ -341,7 +460,7 @@ export default function Explore() {
                 : 'text-muted'
             }`}
           >
-            <MapIcon size={14} /> Map
+            <MapIcon size={14} /> {t('explore.map')}
           </button>
           <button
             onClick={() => setView('list')}
@@ -351,14 +470,14 @@ export default function Explore() {
                 : 'text-muted'
             }`}
           >
-            <ListIcon size={14} /> List
+            <ListIcon size={14} /> {t('explore.list')}
           </button>
         </div>
       </div>
 
       {view === 'map' ? (
         <>
-          <div className="relative flex-1 min-h-[320px]">
+          <div className="relative min-h-[150px] flex-1">
             <MapView
               listings={mapResults.map((r) => r.listing)}
               radiusKm={filters.radiusKm === 999 ? 25 : filters.radiusKm}
@@ -391,6 +510,12 @@ export default function Explore() {
                 ) : (
                   <p className="mt-1 text-xs text-muted">Try a different category or clear filters.</p>
                 )}
+                {saveSearchButton && (
+                  <div className="pointer-events-auto mt-2 flex flex-col items-center gap-1">
+                    <p className="text-[11px] text-muted">{t('explore.saveHint')}</p>
+                    {saveSearchButton}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -415,10 +540,10 @@ export default function Explore() {
                       className="card-elevated card-interactive flex w-[calc(100%-24px)] shrink-0 snap-center items-center gap-3 rounded-2xl bg-surface-2 p-3 text-left"
                     >
                       <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-bg text-2xl">
-                        {isImageUrl(listing.images[0]) ? (
-                          <img src={listing.images[0]} alt="" className="h-full w-full object-cover" />
+                        {isImageUrl(listing.images[0]) && !lowData ? (
+                          <img src={mediaSrc(listing.images[0], 'thumb')} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
                         ) : (
-                          listing.images[0] ?? CATEGORY_META[listing.category].emoji
+                          (isImageUrl(listing.images[0]) ? null : listing.images[0]) ?? CATEGORY_META[listing.category].emoji
                         )}
                       </div>
                       <div className="min-w-0 flex-1">
@@ -447,7 +572,7 @@ export default function Explore() {
           <div className="flex items-center gap-2 px-4 pb-2">
             <button
               onClick={() => setMode('search')}
-              className={`tap-flash rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+              className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
                 mode === 'search'
                   ? 'bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)]'
                   : 'bg-surface-2 text-muted'
@@ -457,7 +582,7 @@ export default function Explore() {
             </button>
             <button
               onClick={() => setMode('ai')}
-              className={`tap-flash flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+              className={`tap-flash flex items-center gap-1 min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
                 mode === 'ai' ? 'bg-ai text-bg shadow-[0_2px_10px_-2px_rgba(109,87,232,0.55)]' : 'bg-surface-2 text-muted'
               }`}
             >
@@ -470,7 +595,7 @@ export default function Explore() {
               <button
                 key={k.id}
                 onClick={() => setListKind(k.id)}
-                className={`tap-flash shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+                className={`tap-flash shrink-0 min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
                   listKind === k.id
                     ? 'glow-accent-ring bg-accent/15 text-accent'
                     : 'bg-surface-2 text-muted'
@@ -490,14 +615,21 @@ export default function Explore() {
             </div>
           )}
 
+          {saveSearchButton && (
+            <div className="mx-4 mb-2 flex items-center gap-2 rounded-xl bg-surface-2/70 px-3 py-2">
+              <p className="min-w-0 flex-1 text-[11px] leading-snug text-muted">{t('explore.saveHint')}</p>
+              {saveSearchButton}
+            </div>
+          )}
+
           <div className="flex items-center justify-between gap-2 px-4 pb-2">
-            <p className="shrink-0 text-xs text-muted">{listResults.length} results</p>
+            <p className="shrink-0 text-xs text-muted">{t('explore.results', { n: listResults.length })}</p>
             <div className="no-scrollbar scroll-fade-x flex max-w-[70%] gap-1.5 overflow-x-auto">
               {RANK_MODES.map((m) => (
                 <button
                   key={m.id}
                   onClick={() => setRankMode(m.id)}
-                  className={`tap-flash shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition active:scale-95 ${
+                  className={`tap-flash shrink-0 min-h-8 rounded-full px-3 py-1 text-xs font-medium transition active:scale-95 ${
                     rankMode === m.id
                       ? 'bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_2px_8px_-2px_rgba(36,91,50,0.5)]'
                       : 'bg-surface-2 text-muted'
@@ -511,7 +643,7 @@ export default function Explore() {
 
           <div className="flex-1 overflow-y-auto px-4 pb-4">
             {listResults.length === 0 && (
-              <p className="pt-8 text-center text-sm text-muted">No listings match yet — try widening the radius or clearing filters.</p>
+              <p className="pt-8 text-center text-sm text-muted">{t('explore.noResults')}</p>
             )}
             {/* Single column on phones (where ListingCard's own row layout already reads
                 well edge-to-edge); tablets/desktop get 2-3 columns instead of one very
@@ -521,6 +653,7 @@ export default function Explore() {
                 <ListingCard key={listing.id} listing={listing} />
               ))}
             </div>
+            {listingsHasMore && <LoadMore onLoad={loadMoreListings} loading={listingsLoadingMore} />}
           </div>
         </>
       )}

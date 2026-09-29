@@ -39,6 +39,11 @@ wishlistRouter.post('/toggle', requireAuth, async (req, res) => {
     res.json({ wishlisted: false })
     return
   }
-  await db.insert(wishlistEntries).values({ userId: req.userId!, listingId })
+  const [listing] = await db.select({ id: listings.id }).from(listings).where(eq(listings.id, listingId)).limit(1)
+  if (!listing) {
+    res.status(404).json({ error: 'Listing not found' })
+    return
+  }
+  await db.insert(wishlistEntries).values({ userId: req.userId!, listingId }).onConflictDoNothing()
   res.json({ wishlisted: true })
 })

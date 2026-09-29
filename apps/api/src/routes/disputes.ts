@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { db } from '../db/client'
 import { conversations, disputes, listings } from '../db/schema'
 import { requireAuth } from '../lib/auth'
+import { presentListing } from '../lib/geo'
 
 export const disputesRouter = Router()
 
@@ -49,8 +50,14 @@ disputesRouter.get('/mine', requireAuth, async (req, res) => {
     .select({ dispute: disputes, conversation: conversations, listing: listings })
     .from(disputes)
     .innerJoin(conversations, eq(disputes.conversationId, conversations.id))
-    .innerJoin(listings, eq(conversations.listingId, listings.id))
+    // Left join: disputes can be raised on event conversations too, which have no listing —
+    // an inner join silently dropped them from both parties' view.
+    .leftJoin(listings, eq(conversations.listingId, listings.id))
     .where(or(eq(conversations.buyerId, req.userId!), eq(conversations.sellerId, req.userId!)))
     .orderBy(desc(disputes.createdAt))
-  res.json({ disputes: rows })
+  // Location-privacy fuzzing applies here too (this embedded the raw listing row, leaking
+  // the exact coordinates of "approximate location" listings to the buyer).
+  res.json({
+    disputes: rows.map((r) => ({ ...r, listing: r.listing ? presentListing(r.listing, req.userId) : null })),
+  })
 })

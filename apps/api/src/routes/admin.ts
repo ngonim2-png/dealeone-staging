@@ -145,7 +145,7 @@ adminRouter.get('/disputes', async (req, res) => {
     })
     .from(disputes)
     .innerJoin(conversations, eq(disputes.conversationId, conversations.id))
-    .innerJoin(listings, eq(conversations.listingId, listings.id))
+    .leftJoin(listings, eq(conversations.listingId, listings.id)) // event disputes have no listing
     .where(status ? eq(disputes.status, status as any) : undefined)
     .orderBy(desc(disputes.createdAt))
     .limit(200)
@@ -154,7 +154,7 @@ adminRouter.get('/disputes', async (req, res) => {
     new Set(rows.flatMap((r) => [r.conversation.buyerId, r.conversation.sellerId, r.dispute.raisedByUserId])),
   )
   const partyRows = partyIds.length
-    ? await db.select({ id: users.id, name: users.name, phone: users.phone }).from(users)
+    ? await db.select({ id: users.id, name: users.name, phone: users.phone }).from(users).where(inArray(users.id, partyIds))
     : []
   const partyById = new Map(partyRows.map((u) => [u.id, u]))
 

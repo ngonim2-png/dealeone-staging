@@ -7,7 +7,7 @@
 // — live on the user rather than a listing, see the two *Until columns on `users` in
 // schema.ts; they're charged the same simulated way but aren't listing-scoped, so they're
 // not part of this file's listing-focused sweep.)
-import { and, eq, isNotNull, lt } from 'drizzle-orm'
+import { and, eq, isNotNull, lt, or } from 'drizzle-orm'
 import { db } from '../db/client'
 import { listings } from '../db/schema'
 
@@ -44,7 +44,9 @@ export async function sweepBilling(): Promise<void> {
   await db
     .update(listings)
     .set({ status: 'expired', updatedAt: now })
-    .where(and(eq(listings.status, 'active'), lt(listings.feePaidUntil, now)))
+    // Unpaid this month, OR past the listing's own lifetime cap (the 1/3/6-month duration
+    // picked at publish) — the cap was stored but never enforced before.
+    .where(and(eq(listings.status, 'active'), or(lt(listings.feePaidUntil, now), lt(listings.expiresAt, now))))
   await db
     .update(listings)
     .set({ sponsored: false, updatedAt: now })

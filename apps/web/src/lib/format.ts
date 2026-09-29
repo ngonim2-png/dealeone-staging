@@ -22,6 +22,7 @@ export function formatEventWhen(iso: string): string {
   return `${date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} · ${time}`
 }
 
+/** Compact timestamp for tight spots (chat list): "now", "5m", "3h", "2d", "21 Sep". */
 export function timeAgo(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime()
   const min = Math.floor(diffMs / 60000)
@@ -31,5 +32,28 @@ export function timeAgo(iso: string): string {
   if (hr < 24) return `${hr}h`
   const day = Math.floor(hr / 24)
   if (day < 7) return `${day}d`
-  return new Date(iso).toLocaleDateString()
+  return shortDate(iso)
+}
+
+/** Full relative phrase: "just now", "5 min ago", "3h ago", "2 days ago", "on 21 Sep".
+ * Replaces the old `${timeAgo(x)} ago` pattern, which produced "now ago" and
+ * "9/21/2026 ago" once something was more than a week old. */
+export function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime()
+  const min = Math.floor(diffMs / 60000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min} min ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day === 1) return 'yesterday'
+  if (day < 7) return `${day} days ago`
+  return `on ${shortDate(iso)}`
+}
+
+/** "21 Sep", or "21 Sep 2025" when it's not this year. */
+export function shortDate(iso: string): string {
+  const d = new Date(iso)
+  const sameYear = d.getFullYear() === new Date().getFullYear()
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(sameYear ? {} : { year: 'numeric' }) })
 }

@@ -1,33 +1,43 @@
-import type { ReactNode } from 'react'
+import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Loader2, WifiOff } from 'lucide-react'
 import Explore from './pages/Explore'
-import Events from './pages/Events'
-import EventDetail from './pages/EventDetail'
-import CreateEvent from './pages/CreateEvent'
-import Promote from './pages/Promote'
-import ListingDetail from './pages/ListingDetail'
-import Sell from './pages/Sell'
-import Chats from './pages/Chats'
-import ChatThread from './pages/ChatThread'
-import Account from './pages/Account'
-import MyListings from './pages/account/MyListings'
-import MyOffers from './pages/account/MyOffers'
-import MyEvents from './pages/account/MyEvents'
-import Wishlist from './pages/account/Wishlist'
-import Verification from './pages/account/Verification'
-import BuyerRequests from './pages/account/BuyerRequests'
-import MyReports from './pages/account/MyReports'
-import Settings from './pages/account/Settings'
-import Payments from './pages/account/Payments'
-import AdminHome from './pages/admin/AdminHome'
-import AdminReports from './pages/admin/AdminReports'
-import AdminDisputes from './pages/admin/AdminDisputes'
-import AdminUsers from './pages/admin/AdminUsers'
-import AdminListings from './pages/admin/AdminListings'
-import AdminVerification from './pages/admin/AdminVerification'
 import Login from './pages/Login'
 import { useApp } from './context/AppContext'
+import logoMark from './assets/logo-mark.png'
+
+// Code splitting: only the home map and the login screen ship in the first download.
+// Every other screen is fetched the first time someone opens it (then cached by the
+// service worker), so opening the app on a slow connection is noticeably quicker.
+const Events = lazy(() => import('./pages/Events'))
+const EventDetail = lazy(() => import('./pages/EventDetail'))
+const CreateEvent = lazy(() => import('./pages/CreateEvent'))
+const Promote = lazy(() => import('./pages/Promote'))
+const Notifications = lazy(() => import('./pages/Notifications'))
+const ListingDetail = lazy(() => import('./pages/ListingDetail'))
+const Sell = lazy(() => import('./pages/Sell'))
+const Chats = lazy(() => import('./pages/Chats'))
+const ChatThread = lazy(() => import('./pages/ChatThread'))
+const Account = lazy(() => import('./pages/Account'))
+const MyListings = lazy(() => import('./pages/account/MyListings'))
+const MyOffers = lazy(() => import('./pages/account/MyOffers'))
+const MyEvents = lazy(() => import('./pages/account/MyEvents'))
+const Wishlist = lazy(() => import('./pages/account/Wishlist'))
+const Verification = lazy(() => import('./pages/account/Verification'))
+const BuyerRequests = lazy(() => import('./pages/account/BuyerRequests'))
+const MyReports = lazy(() => import('./pages/account/MyReports'))
+const Settings = lazy(() => import('./pages/account/Settings'))
+const Payments = lazy(() => import('./pages/account/Payments'))
+const SavedSearches = lazy(() => import('./pages/account/SavedSearches'))
+const EditListing = lazy(() => import('./pages/account/EditListing'))
+const Insights = lazy(() => import('./pages/account/Insights'))
+const Invite = lazy(() => import('./pages/account/Invite'))
+const AdminHome = lazy(() => import('./pages/admin/AdminHome'))
+const AdminReports = lazy(() => import('./pages/admin/AdminReports'))
+const AdminDisputes = lazy(() => import('./pages/admin/AdminDisputes'))
+const AdminUsers = lazy(() => import('./pages/admin/AdminUsers'))
+const AdminListings = lazy(() => import('./pages/admin/AdminListings'))
+const AdminVerification = lazy(() => import('./pages/admin/AdminVerification'))
 
 // Gate for every /admin/* route — Account.tsx only ever links here for an admin, but a
 // non-admin could still type the URL directly, so this is the actual enforcement point
@@ -39,24 +49,39 @@ function AdminRoute({ children }: { children: ReactNode }) {
 }
 
 function App() {
-  const { ready, authChecked, error, currentUser } = useApp()
+  const { ready, authChecked, error, currentUser, offline } = useApp()
 
   return (
-    // Phone width (max-w-md, 448px) stays the ceiling up through small screens — it's
-    // still what most people are on — but widens in steps for tablets/desktop instead of
-    // leaving a narrow phone-shaped column stranded in a sea of empty page background.
+    // `app-shell` (index.css) pins this box to exactly the visible screen, pads it for the
+    // notch/home indicator, and makes each page scroll inside it instead of scrolling the
+    // whole document — see the comment there for why that's what stops the mobile jitter.
+    // Width: edge-to-edge on every phone and tablet (iPads and Android tablets included, in
+    // either orientation) — only capped on big desktop monitors (xl+), where a full-width
+    // marketplace would stretch cards absurdly wide. Pages add columns via md:/lg: grids.
     // Individual pieces (BottomNav's floating pill, the login form, Settings' rows) keep
-    // their own tighter caps on purpose — see the responsive-tablet build-log note for why.
-    <div className="mx-auto flex min-h-dvh max-w-md flex-col bg-bg text-ink sm:max-w-xl md:max-w-3xl lg:max-w-5xl">
+    // their own tighter caps on purpose.
+    <div className="app-shell mx-auto flex w-full flex-col bg-bg text-ink xl:max-w-6xl">
+      {offline && currentUser && (
+        // Fixed, so it doesn't take part in the shell's page layout.
+        <div
+          role="status"
+          className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)_+_0.5rem)] z-[70] flex justify-center px-4"
+        >
+          <span className="flex items-center gap-1.5 rounded-full bg-ink/90 px-3 py-1.5 text-xs font-medium text-white shadow-lg">
+            <WifiOff size={13} /> You're offline — showing your saved copy
+          </span>
+        </div>
+      )}
       {error ? (
         <ApiErrorScreen message={error} />
       ) : !authChecked ? (
-        <LoadingScreen label="Loading DEALEONE…" />
+        <LoadingScreen label="Opening DEALEONE…" />
       ) : !currentUser ? (
         <Login />
       ) : !ready ? (
-        <LoadingScreen label="Setting things up…" />
+        <LoadingScreen label="Opening DEALEONE…" />
       ) : (
+        <Suspense fallback={<LoadingScreen label="Loading…" />}>
         <Routes>
           <Route path="/" element={<Explore />} />
           <Route path="/events" element={<Events />} />
@@ -67,6 +92,7 @@ function App() {
               bookmark or link working by landing on the home screen already in List view. */}
           <Route path="/search" element={<Navigate to="/?view=list" replace />} />
           <Route path="/promote" element={<Promote />} />
+          <Route path="/notifications" element={<Notifications />} />
           <Route path="/listing/:id" element={<ListingDetail />} />
           <Route path="/sell" element={<Sell />} />
           <Route path="/chats" element={<Chats />} />
@@ -81,6 +107,10 @@ function App() {
           <Route path="/account/reports" element={<MyReports />} />
           <Route path="/account/settings" element={<Settings />} />
           <Route path="/account/payments" element={<Payments />} />
+          <Route path="/account/searches" element={<SavedSearches />} />
+          <Route path="/account/listings/:id/edit" element={<EditListing />} />
+          <Route path="/account/insights" element={<Insights />} />
+          <Route path="/account/invite" element={<Invite />} />
           <Route
             path="/admin"
             element={
@@ -130,30 +160,42 @@ function App() {
             }
           />
         </Routes>
+        </Suspense>
       )}
     </div>
   )
 }
 
+// Branded splash while the session and first data load — the logo instead of a bare
+// spinner, so opening the app feels like opening an app.
 function LoadingScreen({ label }: { label: string }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted">
-      <Loader2 size={24} className="animate-spin text-accent" />
-      <p className="text-sm">{label}</p>
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted" role="status" aria-live="polite">
+      <img src={logoMark} alt="" className="logo-glow-pulse h-14 w-14" />
+      <p className="flex items-center gap-2 text-sm">
+        <Loader2 size={16} className="animate-spin text-accent" /> {label}
+      </p>
     </div>
   )
 }
 
+// Shown when the app can't reach the server at start-up (offline, or the free-tier API
+// still waking up — that can take ~30-60s after it's been idle). Used to show developer
+// instructions ("npm run dev:api") to real users.
 function ApiErrorScreen({ message }: { message: string }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
-      <WifiOff size={28} className="text-bad" />
-      <p className="text-sm font-medium text-ink">Can't reach the DEALEONE API</p>
-      <p className="text-xs text-muted">{message}</p>
-      <p className="text-xs text-muted">
-        Make sure the API server is running (<code className="text-ink">npm run dev:api</code>)
-        and <code className="text-ink">VITE_API_URL</code> points at it, then reload.
+      <span className="flex h-14 w-14 items-center justify-center rounded-full bg-bad/10 text-bad">
+        <WifiOff size={26} />
+      </span>
+      <p className="text-base font-semibold text-ink">Can't connect to DEALEONE</p>
+      <p className="max-w-xs text-sm text-muted">{message}</p>
+      <p className="max-w-xs text-xs text-muted">
+        If you just opened the app, the server may still be waking up — wait a few seconds and try again.
       </p>
+      <button onClick={() => window.location.reload()} className="btn-primary mt-2 min-h-12 px-6 text-sm">
+        Try again
+      </button>
     </div>
   )
 }

@@ -1,11 +1,13 @@
 import { Router } from 'express'
-import { and, desc, eq, ne } from 'drizzle-orm'
+import { and, desc, eq, inArray, ne, TransactionRollbackError } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/client'
 import { conversations, listings, messages, offers, users } from '../db/schema'
 import { requireAuth } from '../lib/auth'
 import { ensureConversation } from '../lib/conversations'
 import { presentListing } from '../lib/geo'
+import { announceMessage } from '../lib/chatEvents'
+import { notify } from '../lib/notify'
 
 export const offersRouter = Router()
 
@@ -52,14 +54,15 @@ offersRouter.get('/received', requireAuth, async (req, res) => {
  * why. `messageTypeEnum` already had 'system' as a value long before this round, but nothing
  * ever inserted one — this is the first real use of it. */
 async function postSystemMessage(conversationId: string, senderId: string, text: string) {
-  await db.insert(messages).values({ conversationId, senderId, type: 'system', text })
-  await db.update(conversations).set({ lastMessageAt: new Date() }).where(eq(conversations.id, conversationId))
+  const [msg] = await db.insert(messages).values({ conversationId, senderId, type: 'system', text }).returning()
+  const [convo] = await db.update(conversations).set({ lastMessageAt: new Date() }).where(eq(conversations.id, conversationId)).returning()
+  if (convo) announceMessage(convo, msg)
 }
 
 const createOfferSchema = z.object({
   listingId: z.string(),
-  amount: z.number().int().nonnegative(),
-  message: z.string().optional(),
+  amount: z.number().int().positive().max(1_000_000_000),
+  message: z.string().max(1000).optional(),
 })
 
 offersRouter.post('/', requireAuth, async (req, res) => {
@@ -75,6 +78,17 @@ offersRouter.post('/', requireAuth, async (req, res) => {
     res.status(404).json({ error: 'Listing not found' })
     return
   }
+  // A seller could previously offer on their own listing, accept it, mark it sold and then
+  // rate themselves 5 stars — repeatable for free. Offers are also only meaningful on an
+  // item that's actually still for sale.
+  if (listing.sellerId === req.userId) {
+    res.status(400).json({ error: "You can't make an offer on your own listing." })
+    return
+  }
+  if (listing.status !== 'active') {
+    res.status(409).json({ error: 'This listing is no longer available.' })
+    return
+  }
 
   const [offer] = await db
     .insert(offers)
@@ -82,17 +96,27 @@ offersRouter.post('/', requireAuth, async (req, res) => {
     .returning()
 
   const convo = await ensureConversation(req.userId!, listingId)
-  await db.insert(messages).values({
-    conversationId: convo.id,
-    senderId: req.userId!,
-    type: 'offer',
-    text: message ?? '',
-    amount,
-  })
+  const [offerMsg] = await db
+    .insert(messages)
+    .values({
+      conversationId: convo.id,
+      senderId: req.userId!,
+      type: 'offer',
+      text: message ?? '',
+      amount,
+    })
+    .returning()
   await db
     .update(conversations)
     .set({ lastMessageAt: new Date() })
     .where(eq(conversations.id, convo.id))
+  announceMessage(convo, offerMsg)
+  notify(listing.sellerId, {
+    type: 'offer',
+    title: `New offer: NLe ${amount.toLocaleString()}`,
+    body: `On “${listing.title}” (asking NLe ${listing.price.toLocaleString()})`,
+    url: '/account/offers',
+  })
 
   res.status(201).json({ offer, conversationId: convo.id })
 })
@@ -128,29 +152,64 @@ offersRouter.patch('/:id/accept', requireAuth, async (req, res) => {
   if (!row) return
   const { offer, listing } = row
 
-  const [updated] = await db
-    .update(offers)
-    .set({ status: 'accepted' })
-    .where(eq(offers.id, offer.id))
-    .returning()
+  // All-or-nothing, and conditional at every step: the offer must still be open and the
+  // listing must still be for sale *at the moment of the update*, not just when it was
+  // read. Without this, accepting offer A (auto-rejecting B) and then accepting B left two
+  // "accepted" offers on one item.
+  const result = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(offers)
+      .set({ status: 'accepted' })
+      .where(and(eq(offers.id, offer.id), inArray(offers.status, ['pending', 'countered'])))
+      .returning()
+    if (!updated) return { error: 'This offer has already been answered.' as const }
+    const [reserved] = await tx
+      .update(listings)
+      .set({ status: 'reserved', updatedAt: new Date() })
+      .where(and(eq(listings.id, listing.id), eq(listings.status, 'active')))
+      .returning({ id: listings.id })
+    if (!reserved) {
+      tx.rollback()
+    }
+    const others = await tx
+      .update(offers)
+      .set({ status: 'rejected' })
+      .where(and(eq(offers.listingId, listing.id), inArray(offers.status, ['pending', 'countered']), ne(offers.id, offer.id)))
+      .returning()
+    return { updated, others }
+  }).catch((err) => {
+    // tx.rollback() throws to abort the transaction — that's the "listing no longer for
+    // sale" case, not a server error.
+    if (err instanceof TransactionRollbackError) return { error: 'This listing is no longer available.' as const }
+    throw err
+  })
 
-  if (listing.status === 'active') {
-    await db.update(listings).set({ status: 'reserved', updatedAt: new Date() }).where(eq(listings.id, listing.id))
+  if ('error' in result) {
+    res.status(409).json({ error: result.error })
+    return
   }
 
+  notify(offer.buyerId, {
+    type: 'offer_update',
+    title: 'Your offer was accepted 🎉',
+    body: `NLe ${offer.amount.toLocaleString()} for “${listing.title}”. Arrange to meet in Messages.`,
+    url: '/account/offers',
+  })
+  for (const other of result.others) {
+    notify(other.buyerId, {
+      type: 'offer_update',
+      title: 'Item no longer available',
+      body: `“${listing.title}” went to another buyer.`,
+      url: '/account/offers',
+    })
+  }
   const acceptedConvo = await ensureConversation(offer.buyerId, listing.id)
   await postSystemMessage(
     acceptedConvo.id,
     req.userId!,
     `Offer accepted: NLe ${offer.amount} for ${listing.title}. Coordinate a time/place to complete the deal.`,
   )
-
-  const otherPending = await db
-    .select()
-    .from(offers)
-    .where(and(eq(offers.listingId, listing.id), eq(offers.status, 'pending'), ne(offers.id, offer.id)))
-  for (const other of otherPending) {
-    await db.update(offers).set({ status: 'rejected' }).where(eq(offers.id, other.id))
+  for (const other of result.others) {
     const convo = await ensureConversation(other.buyerId, listing.id)
     await postSystemMessage(
       convo.id,
@@ -159,7 +218,7 @@ offersRouter.patch('/:id/accept', requireAuth, async (req, res) => {
     )
   }
 
-  res.json({ offer: updated })
+  res.json({ offer: result.updated })
 })
 
 offersRouter.patch('/:id/reject', requireAuth, async (req, res) => {
@@ -170,16 +229,26 @@ offersRouter.patch('/:id/reject', requireAuth, async (req, res) => {
   const [updated] = await db
     .update(offers)
     .set({ status: 'rejected' })
-    .where(eq(offers.id, offer.id))
+    .where(and(eq(offers.id, offer.id), inArray(offers.status, ['pending', 'countered'])))
     .returning()
+  if (!updated) {
+    res.status(409).json({ error: 'This offer has already been answered.' })
+    return
+  }
 
+  notify(offer.buyerId, {
+    type: 'offer_update',
+    title: 'Offer declined',
+    body: `Your NLe ${offer.amount.toLocaleString()} offer on “${listing.title}” wasn't accepted.`,
+    url: '/account/offers',
+  })
   const convo = await ensureConversation(offer.buyerId, listing.id)
   await postSystemMessage(convo.id, req.userId!, `Offer of NLe ${offer.amount} declined for ${listing.title}.`)
 
   res.json({ offer: updated })
 })
 
-const counterSchema = z.object({ counterAmount: z.number().int().nonnegative() })
+const counterSchema = z.object({ counterAmount: z.number().int().positive().max(1_000_000_000) })
 
 offersRouter.patch('/:id/counter', requireAuth, async (req, res) => {
   const parsed = counterSchema.safeParse(req.body)
@@ -194,18 +263,32 @@ offersRouter.patch('/:id/counter', requireAuth, async (req, res) => {
   const [updated] = await db
     .update(offers)
     .set({ status: 'countered', counterAmount: parsed.data.counterAmount })
-    .where(eq(offers.id, offer.id))
+    .where(and(eq(offers.id, offer.id), inArray(offers.status, ['pending', 'countered'])))
     .returning()
+  if (!updated) {
+    res.status(409).json({ error: 'This offer has already been answered.' })
+    return
+  }
 
   const convo = await ensureConversation(offer.buyerId, listing.id)
-  await db.insert(messages).values({
-    conversationId: convo.id,
-    senderId: req.userId!,
-    type: 'counter_offer',
-    text: '',
-    amount: parsed.data.counterAmount,
-  })
+  const [counterMsg] = await db
+    .insert(messages)
+    .values({
+      conversationId: convo.id,
+      senderId: req.userId!,
+      type: 'counter_offer',
+      text: '',
+      amount: parsed.data.counterAmount,
+    })
+    .returning()
   await db.update(conversations).set({ lastMessageAt: new Date() }).where(eq(conversations.id, convo.id))
+  announceMessage(convo, counterMsg)
+  notify(offer.buyerId, {
+    type: 'offer_update',
+    title: `Counter-offer: NLe ${parsed.data.counterAmount.toLocaleString()}`,
+    body: `The seller of “${listing.title}” countered your NLe ${offer.amount.toLocaleString()} offer.`,
+    url: `/chats/${convo.id}`,
+  })
 
   res.json({ offer: updated })
 })

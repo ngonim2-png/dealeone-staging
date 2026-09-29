@@ -2,15 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import { Camera, Check, Clock, Loader2, Lock, X, Zap } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import { useApp } from '../../context/AppContext'
-import { api } from '../../lib/api'
+import { api, errorMessage } from '../../lib/api'
 import { compressImageFile } from '../../lib/media'
 import { formatPrice } from '../../lib/format'
 import type { VerificationLevel } from '../../types'
 import { VERIFICATION_LABELS } from '../../types'
+import { useToast } from '../../components/Toast'
 
 const DESCRIPTIONS: Record<VerificationLevel, string> = {
   0: 'Not started.',
-  1: 'Confirm your phone number by OTP.',
+  1: 'Signed up with a phone number and your own PIN.',
   2: 'Upload a government ID for identity checks.',
   3: 'Complete your first successful sale and seller history review.',
   4: 'Register documentation for your business to unlock storefronts and advertising.',
@@ -30,6 +31,7 @@ interface VerificationRequestRow {
 // had no onClick handler at all. Submits to routes/verificationRequests.ts's POST /, which an
 // admin then reviews from Admin > Verification (mirrors the reports/disputes pattern).
 export default function Verification() {
+  const toast = useToast()
   const { currentUser, purchaseVerificationPriority } = useApp()
   const [requests, setRequests] = useState<VerificationRequestRow[] | null>(null)
   const [sheetLevel, setSheetLevel] = useState<VerificationLevel | null>(null)
@@ -41,9 +43,15 @@ export default function Verification() {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const loadRequests = () => {
-    api.get<{ verificationRequests: VerificationRequestRow[] }>('/api/verification-requests/me').then((res) =>
-      setRequests(res.verificationRequests),
-    )
+    api
+      .get<{ verificationRequests: VerificationRequestRow[] }>('/api/verification-requests/me')
+      .then((res) => setRequests(res.verificationRequests))
+      .catch((err) => {
+        // Fall back to "no pending requests" rather than hiding the page; the server still
+        // rejects a duplicate submission (409) if one is actually pending.
+        console.error('load verification requests failed', err)
+        setRequests([])
+      })
   }
 
   useEffect(loadRequests, [])
@@ -91,7 +99,7 @@ export default function Verification() {
       await purchaseVerificationPriority()
     } catch (err) {
       console.error('purchase verification priority failed', err)
-      alert('Could not complete that payment — try again.')
+      toast.error(errorMessage(err, 'Could not complete that payment — please try again.'))
     } finally {
       setPriorityBusy(false)
     }
@@ -121,9 +129,9 @@ export default function Verification() {
           <button
             onClick={buyPriority}
             disabled={priorityBusy}
-            className="tap-flash shrink-0 rounded-full bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-accent transition active:scale-95 disabled:opacity-60"
+            className="tap-flash flex min-h-10 min-w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-accent-2 to-accent px-4 text-xs font-semibold text-white shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)] transition active:scale-95 disabled:opacity-60"
           >
-            {priorityBusy ? <Loader2 size={12} className="animate-spin" /> : hasPriority ? 'Extend' : 'Buy'}
+            {priorityBusy ? <Loader2 size={14} className="animate-spin" /> : hasPriority ? 'Extend' : 'Get it'}
           </button>
         </div>
 
@@ -158,7 +166,7 @@ export default function Verification() {
                 )}
               </div>
               {isNext && !pendingForThis && (
-                <button onClick={() => openSheet(lvl)} className="btn-primary shrink-0 self-center px-3 py-1.5 text-[11px]">
+                <button onClick={() => openSheet(lvl)} className="btn-primary min-h-10 shrink-0 self-center px-4 text-xs">
                   Start
                 </button>
               )}
@@ -174,7 +182,7 @@ export default function Verification() {
               <h2 className="text-xl font-display font-bold tracking-tight text-ink">
                 Request Level {sheetLevel}
               </h2>
-              <button onClick={() => setSheetLevel(null)} className="icon-btn h-8 w-8 bg-surface-2">
+              <button onClick={() => setSheetLevel(null)} aria-label="Close" className="icon-btn h-11 w-11 bg-surface-2">
                 <X size={16} />
               </button>
             </div>

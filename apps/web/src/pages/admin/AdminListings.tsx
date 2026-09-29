@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import { ListChecks } from 'lucide-react'
+import { ListChecks, Loader2 } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
 import EmptyState from '../../components/EmptyState'
 import { api } from '../../lib/api'
 import { formatPrice } from '../../lib/format'
 import type { ListingStatus } from '../../types'
+import LoadError from '../../components/LoadError'
 
 interface AdminListingRow {
   listing: {
@@ -21,12 +22,14 @@ const STATUSES: ListingStatus[] = ['active', 'reserved', 'sold', 'expired', 'rem
 export default function AdminListings() {
   const [q, setQ] = useState('')
   const [rows, setRows] = useState<AdminListingRow[] | null>(null)
+  const [loadError, setLoadError] = useState(false)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const load = (query: string) => {
+    setLoadError(false)
     api
       .get<{ listings: AdminListingRow[] }>(`/api/admin/listings${query ? `?q=${encodeURIComponent(query)}` : ''}`)
-      .then((res) => setRows(res.listings))
+      .then((res) => setRows(res.listings)).catch(() => setLoadError(true))
   }
 
   useEffect(() => {
@@ -58,6 +61,12 @@ export default function AdminListings() {
         />
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {loadError && <LoadError onRetry={() => load(q)} />}
+        {!rows && !loadError && (
+          <div className="flex justify-center py-10 text-muted">
+            <Loader2 size={20} className="animate-spin" />
+          </div>
+        )}
         {rows && rows.length === 0 && <EmptyState icon={ListChecks} title="No listings found" hint="Try a different search." />}
         {rows?.map(({ listing, seller }) => (
           <div key={listing.id} className="card-elevated rounded-xl bg-surface p-3">
@@ -78,7 +87,7 @@ export default function AdminListings() {
                   key={s}
                   disabled={busyId === listing.id}
                   onClick={() => setStatus(listing.id, s)}
-                  className={`tap-flash rounded-full px-2.5 py-1 text-[11px] capitalize transition active:scale-95 ${
+                  className={`tap-flash min-h-8 rounded-full px-3 py-1 text-xs capitalize transition active:scale-95 ${
                     s === 'removed' ? 'bg-bad/10 text-bad' : 'bg-surface-2 text-muted'
                   }`}
                 >

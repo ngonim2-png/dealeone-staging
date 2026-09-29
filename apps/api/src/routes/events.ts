@@ -1,10 +1,12 @@
 import { Router } from 'express'
 import { and, asc, desc, eq, gte, inArray, lt, lte, ne, or, ilike, sql } from 'drizzle-orm'
 import { z } from 'zod'
+import { isSafeImageValue } from '../lib/sanitize'
 import { db } from '../db/client'
-import { eventCategoryEnum, eventInterests, events, users } from '../db/schema'
-import { eventDistanceKmExpr } from '../lib/geo'
+import { eventCategoryEnum, eventInterests, events, eventStatusEnum, reports, users } from '../db/schema'
+import { eventDistanceKmExpr, safeCoord } from '../lib/geo'
 import { requireAuth } from '../lib/auth'
+import { normalizeImages } from '../lib/media'
 
 export const eventsRouter = Router()
 
@@ -53,16 +55,25 @@ async function withInterestData<T extends { event: { id: string } }>(rows: T[], 
   }))
 }
 
+const csvOf = (allowed: readonly string[]) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v ? v.split(',').filter(Boolean) : undefined))
+    .refine((vals) => !vals || vals.every((x) => allowed.includes(x)), { message: 'Unknown value' })
+
+// Validated against the real enums and finite numbers — `?status=bogus` or `?lat=1e400`
+// used to reach Postgres and crash the API.
 const querySchema = z.object({
-  lat: z.coerce.number().optional(),
-  lng: z.coerce.number().optional(),
-  radiusKm: z.coerce.number().optional(),
-  categories: z.string().optional(), // comma-separated
-  q: z.string().optional(),
+  lat: z.coerce.number().finite().min(-90).max(90).optional(),
+  lng: z.coerce.number().finite().min(-180).max(180).optional(),
+  radiusKm: z.coerce.number().finite().positive().optional(),
+  categories: csvOf(eventCategoryEnum.enumValues),
+  q: z.string().max(200).optional(),
   when: z.enum(['upcoming', 'past', 'all']).optional(), // default 'upcoming'
   sort: z.enum(['soonest', 'closest', 'newest']).optional(),
   organizerId: z.string().optional(),
-  status: z.string().optional(), // comma-separated, defaults to "active"
+  status: csvOf(eventStatusEnum.enumValues), // defaults to active
 })
 
 eventsRouter.get('/', async (req, res) => {
@@ -79,16 +90,15 @@ eventsRouter.get('/', async (req, res) => {
   const now = new Date()
   const when = q.when ?? 'upcoming'
 
-  const statusList = (q.status ?? 'active').split(',').filter(Boolean)
+  // Cancelled events are only listed for their own organizer (My Events).
+  const own = !!req.userId && q.organizerId === req.userId
+  const statusList = own && q.status?.length ? q.status : ['active']
   const conditions = [inArray(events.status, statusList as any), lte(dist, radiusKm)]
 
   if (when === 'upcoming') conditions.push(gte(events.startsAt, now))
   else if (when === 'past') conditions.push(lt(events.startsAt, now))
 
-  if (q.categories) {
-    const cats = q.categories.split(',').filter(Boolean)
-    if (cats.length) conditions.push(inArray(events.category, cats as any))
-  }
+  if (q.categories?.length) conditions.push(inArray(events.category, q.categories as any))
   if (q.organizerId) conditions.push(eq(events.organizerId, q.organizerId))
   if (q.q) {
     conditions.push(
@@ -139,8 +149,8 @@ eventsRouter.get('/:id', async (req, res) => {
     return
   }
 
-  const lat = Number(req.query.lat) || DEFAULT_LAT
-  const lng = Number(req.query.lng) || DEFAULT_LNG
+  const lat = safeCoord(req.query.lat, 90, DEFAULT_LAT)
+  const lng = safeCoord(req.query.lng, 180, DEFAULT_LNG)
   const dist = eventDistanceKmExpr(lat, lng)
   const [{ distanceKm }] = await db
     .select({ distanceKm: dist })
@@ -175,19 +185,20 @@ eventsRouter.get('/:id', async (req, res) => {
 
 const createEventSchema = z.object({
   category: z.enum(eventCategoryEnum.enumValues),
-  title: z.string().min(1),
-  description: z.string().default(''),
-  venueName: z.string().min(1),
-  lat: z.number(),
-  lng: z.number(),
-  startsAt: z.string().min(1),
-  endsAt: z.string().min(1).optional(),
+  title: z.string().trim().min(1).max(120),
+  description: z.string().max(4000).default(''),
+  venueName: z.string().trim().min(1).max(160),
+  lat: z.number().finite().min(-90).max(90),
+  lng: z.number().finite().min(-180).max(180),
+  // Must be real dates — an unparseable string used to become an Invalid Date and crash the insert.
+  startsAt: z.string().min(1).refine((v) => !Number.isNaN(Date.parse(v)), 'Invalid start date'),
+  endsAt: z.string().min(1).refine((v) => !Number.isNaN(Date.parse(v)), 'Invalid end date').optional(),
   // e.g. [{ name: 'General', price: 50 }, { name: 'VIP', price: 150 }] — empty means free.
   ticketTiers: z
     .array(z.object({ name: z.string().min(1), price: z.number().int().nonnegative() }))
     .max(6)
     .default([]),
-  images: z.array(z.string().max(3_000_000)).max(5).default([]),
+  images: z.array(z.string().max(3_000_000).refine(isSafeImageValue, 'Unsupported image')).max(5).default([]),
 })
 
 eventsRouter.post('/', requireAuth, async (req, res) => {
@@ -210,7 +221,7 @@ eventsRouter.post('/', requireAuth, async (req, res) => {
       startsAt: new Date(d.startsAt),
       endsAt: d.endsAt ? new Date(d.endsAt) : undefined,
       ticketTiers: d.ticketTiers,
-      images: d.images,
+      images: await normalizeImages(d.images, req.userId!),
     })
     .returning()
 
@@ -230,6 +241,19 @@ eventsRouter.patch('/:id/status', requireAuth, async (req, res) => {
   if (!existing || existing.organizerId !== req.userId) {
     res.status(404).json({ error: 'Event not found' })
     return
+  }
+  // An event an admin took down after a report stays down — the organizer can't just flip
+  // it back to active. (A report resolved as 'resolved' = actioned; 'dismissed' = no action.)
+  if (parsed.data.status === 'active' && existing.status === 'cancelled') {
+    const [moderated] = await db
+      .select({ id: reports.id })
+      .from(reports)
+      .where(and(eq(reports.targetType, 'event'), eq(reports.targetId, existing.id), eq(reports.status, 'resolved')))
+      .limit(1)
+    if (moderated) {
+      res.status(403).json({ error: 'This event was removed by moderators and can’t be reactivated.' })
+      return
+    }
   }
   const [updated] = await db
     .update(events)
@@ -257,7 +281,7 @@ eventsRouter.post('/:id/interested', requireAuth, async (req, res) => {
   if (existing) {
     await db.delete(eventInterests).where(eq(eventInterests.id, existing.id))
   } else {
-    await db.insert(eventInterests).values({ eventId: req.params.id, userId: req.userId! })
+    await db.insert(eventInterests).values({ eventId: req.params.id, userId: req.userId! }).onConflictDoNothing()
   }
 
   const [{ count }] = await db

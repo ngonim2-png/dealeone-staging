@@ -17,21 +17,34 @@ import Rating from '../components/Rating'
 import ReportSheet from '../components/ReportSheet'
 import { useApp } from '../context/AppContext'
 import { EVENT_CATEGORY_META, VERIFICATION_LABELS } from '../types'
-import { formatDistance, formatEventWhen, formatPrice, timeAgo } from '../lib/format'
+import { formatDistance, formatEventWhen, formatPrice, relativeTime } from '../lib/format'
 import { distanceKm } from '../lib/geo'
-import { isImageUrl } from '../lib/media'
+import { isImageUrl, mediaSrc } from '../lib/media'
 import { reverseGeocode } from '../lib/geocode'
+import { shareLink } from '../lib/share'
+import { errorMessage } from '../lib/api'
+import { useToast } from '../components/Toast'
 
 export default function EventDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { events, sellers, currentUser, toggleEventInterest, ensureEventConversation, userLocation } = useApp()
-  const [toast, setToast] = useState<string | null>(null)
+  const { events, getEvent, loadEvent, sellers, currentUser, toggleEventInterest, ensureEventConversation, userLocation } = useApp()
+  const toast = useToast()
+  const [lookup, setLookup] = useState<'idle' | 'loading' | 'done'>('idle')
+  const [messaging, setMessaging] = useState(false)
   const [address, setAddress] = useState<string | null>(null)
   const [interestBusy, setInterestBusy] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
 
-  const event = events.find((e) => e.id === id)
+  const event = getEvent(id)
+
+  // Past/cancelled events (or a shared link opened cold) aren't in the live feed — fetch.
+  useEffect(() => {
+    if (!id || event) return
+    setLookup('loading')
+    loadEvent(id).finally(() => setLookup('done'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, !!event])
   const organizer = event ? sellers.find((s) => s.id === event.organizerId) : undefined
 
   const similar = useMemo(() => {
@@ -68,10 +81,20 @@ export default function EventDetail() {
   }, [event?.id, event?.lat, event?.lng])
 
   if (!event) {
+    const loading = lookup !== 'done'
     return (
       <div className="flex min-h-dvh flex-col">
-        <BackHeader title="Not found" />
-        <p className="p-6 text-center text-sm text-muted">This event is no longer available.</p>
+        <BackHeader title={loading ? '' : 'Not available'} />
+        {loading ? (
+          <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted">Loading event…</div>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+            <p className="text-sm text-muted">This event has been removed or is no longer available.</p>
+            <button onClick={() => navigate('/events')} className="btn-secondary px-4 py-2 text-sm">
+              See upcoming events
+            </button>
+          </div>
+        )}
       </div>
     )
   }
@@ -81,8 +104,26 @@ export default function EventDetail() {
   const isOwnEvent = currentUser?.id === event.organizerId
 
   const messageOrganizer = async () => {
-    const convoId = await ensureEventConversation(event.id)
-    navigate(`/chats/${convoId}`)
+    if (messaging) return
+    setMessaging(true)
+    try {
+      const convoId = await ensureEventConversation(event.id)
+      navigate(`/chats/${convoId}`)
+    } catch (err) {
+      toast.error(errorMessage(err, "Couldn't open the chat — please try again."))
+    } finally {
+      setMessaging(false)
+    }
+  }
+
+  const share = async () => {
+    const result = await shareLink({
+      title: event.title,
+      text: `${event.title} — ${formatEventWhen(event.startsAt)} at ${event.venueName}`,
+      path: `/events/${event.id}`,
+    })
+    if (result === 'copied') toast.success('Link copied — paste it anywhere to share.')
+    if (result === 'failed') toast.error("Couldn't share this event.")
   }
 
   const toggleInterest = async () => {
@@ -91,8 +132,7 @@ export default function EventDetail() {
       await toggleEventInterest(event.id)
     } catch (err) {
       console.error('toggle interest failed', err)
-      setToast("Couldn't update — try again")
-      setTimeout(() => setToast(null), 2000)
+      toast.error(errorMessage(err, "Couldn't update — please try again."))
     } finally {
       setInterestBusy(false)
     }
@@ -102,8 +142,8 @@ export default function EventDetail() {
     <div className="flex min-h-dvh flex-col pb-24">
       <BackHeader
         right={
-          <button className="icon-btn h-9 w-9 bg-surface-2" aria-label="Share">
-            <Share2 size={16} className="text-ink" />
+          <button onClick={share} className="icon-btn h-11 w-11 bg-surface-2" aria-label="Share event">
+            <Share2 size={18} className="text-ink" />
           </button>
         }
       />
@@ -111,7 +151,7 @@ export default function EventDetail() {
       <div className="relative flex h-64 items-center justify-center overflow-hidden bg-gradient-to-b from-surface-2 to-surface">
         {isImageUrl(event.images[0]) ? (
           <img
-            src={event.images[0]}
+            src={mediaSrc(event.images[0])}
             alt={event.title}
             className="absolute inset-0 h-full w-full object-cover"
           />
@@ -148,7 +188,8 @@ export default function EventDetail() {
           <button
             onClick={toggleInterest}
             disabled={interestBusy}
-            className={`tap-flash flex min-w-0 flex-1 items-center justify-center gap-1.5 truncate rounded-full border py-2.5 text-sm font-semibold transition-transform active:scale-[0.97] disabled:opacity-60 ${
+            aria-pressed={event.isInterested}
+            className={`tap-flash flex min-h-12 min-w-0 flex-1 items-center justify-center gap-1.5 truncate rounded-full border py-3 text-sm font-semibold transition-transform active:scale-[0.97] disabled:opacity-60 ${
               event.isInterested
                 ? 'glow-accent-ring border-accent bg-accent/15 text-accent'
                 : 'border-border text-ink'
@@ -161,7 +202,7 @@ export default function EventDetail() {
             </span>
           </button>
           {!isOwnEvent && (
-            <button onClick={messageOrganizer} className="btn-primary min-w-0 flex-1 truncate py-2.5 text-sm">
+            <button onClick={messageOrganizer} disabled={messaging} className="btn-primary min-h-12 min-w-0 flex-1 truncate py-3 text-sm disabled:opacity-70">
               <MessageCircle size={15} className="shrink-0" /> <span className="truncate">Message Organizer</span>
             </button>
           )}
@@ -243,18 +284,21 @@ export default function EventDetail() {
         )}
 
         <div className="flex gap-2 text-xs text-muted">
-          <button className="tap-flash flex items-center gap-1 rounded-full bg-surface-2 px-3 py-1.5 transition-transform active:scale-95">
-            <Share2 size={12} /> Share
+          <button
+            onClick={share}
+            className="tap-flash flex min-h-10 items-center gap-1.5 rounded-full bg-surface-2 px-4 py-2 transition-transform active:scale-95"
+          >
+            <Share2 size={14} /> Share
           </button>
           {!isOwnEvent && (
             <button
               onClick={() => setReportOpen(true)}
-              className="tap-flash flex items-center gap-1 rounded-full bg-surface-2 px-3 py-1.5 transition-transform active:scale-95"
+              className="tap-flash flex min-h-10 items-center gap-1.5 rounded-full bg-surface-2 px-4 py-2 transition-transform active:scale-95"
             >
               <Flag size={12} /> Report
             </button>
           )}
-          <span className="ml-auto self-center">Posted {timeAgo(event.createdAt)} ago</span>
+          <span className="ml-auto self-center">Posted {relativeTime(event.createdAt)}</span>
         </div>
 
         {similar.length > 0 && (
@@ -271,7 +315,7 @@ export default function EventDetail() {
                   >
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-bg text-xl">
                       {isImageUrl(e.images[0]) ? (
-                        <img src={e.images[0]} alt="" className="h-full w-full object-cover" />
+                        <img src={mediaSrc(e.images[0], 'thumb')} alt="" className="h-full w-full object-cover" />
                       ) : (
                         e.images[0] ?? EVENT_CATEGORY_META[e.category].emoji
                       )}
@@ -298,11 +342,6 @@ export default function EventDetail() {
         targetLabel={event.title}
       />
 
-      {toast && (
-        <div className="fixed inset-x-0 bottom-6 z-[60] flex justify-center">
-          <div className="rounded-full bg-ink px-4 py-2 text-xs font-medium text-bg shadow-lg">{toast}</div>
-        </div>
-      )}
     </div>
   )
 }

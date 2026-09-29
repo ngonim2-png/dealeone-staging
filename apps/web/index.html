@@ -11,8 +11,23 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@700;800;900&display=swap"
       rel="stylesheet"
     />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover + the safe-area padding on .app-shell = edge-to-edge on notched
+         iPhones/Androids without anything hiding under the notch or home indicator.
+         interactive-widget=resizes-content makes Android Chrome shrink the layout when the
+         keyboard opens (instead of sliding the whole page up), so the chat composer and
+         other bottom inputs sit right above the keyboard. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta name="theme-color" content="#f7f8f6" />
+    <!-- Stops iOS from turning +232 phone numbers into blue auto-links mid-layout. -->
+    <meta name="format-detection" content="telephone=no" />
+    <!-- Proper full-screen app when added to the home screen (iPhone/iPad + Android). -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="DEALEONE" />
     <meta name="description" content="DEALEONE — Find It. Near You. A location-first, AI-powered local commerce marketplace for Sierra Leone." />
     <title>DEALEONE — Find It. Near You.</title>
   </head>

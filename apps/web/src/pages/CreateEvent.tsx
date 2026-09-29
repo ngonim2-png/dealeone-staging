@@ -6,6 +6,7 @@ import TopBar from '../components/TopBar'
 import { useApp } from '../context/AppContext'
 import { EVENT_CATEGORY_META, type EventCategory, type TicketTier } from '../types'
 import { compressImageFile } from '../lib/media'
+import { errorMessage } from '../lib/api'
 
 const STEPS = ['Photos', 'Details', 'Tickets & Time', 'Publish']
 const MAX_PHOTOS = 3
@@ -70,7 +71,7 @@ export default function CreateEvent() {
       setStep(3)
     } catch (err) {
       console.error('publish event failed', err)
-      setError('Could not publish this event — check the API server is running and try again.')
+      setError(errorMessage(err, 'Could not publish this event — please try again.'))
     } finally {
       setPublishing(false)
     }
@@ -358,7 +359,7 @@ function PhotoSlot({
               onRemove()
             }}
             aria-label="Remove photo"
-            className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-bg/70 text-ink backdrop-blur transition-transform active:scale-90"
+            className="absolute right-1 top-1 flex h-8 w-8 items-center justify-center rounded-full bg-bg/80 text-ink backdrop-blur transition-transform active:scale-90"
           >
             <X size={13} />
           </button>
@@ -366,6 +367,8 @@ function PhotoSlot({
       ) : (
         <button
           onClick={() => setOpen((o) => !o)}
+          aria-label="Add a photo"
+          aria-expanded={open}
           className="tap-flash flex aspect-square w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-border bg-surface-2 text-muted transition-transform active:scale-[0.97]"
         >
           <Plus size={18} />
@@ -376,13 +379,13 @@ function PhotoSlot({
         <div className="absolute left-0 top-full z-10 mt-1 w-44 space-y-1 rounded-xl border border-border bg-surface p-2 shadow-xl">
           <button
             onClick={() => cameraInputRef.current?.click()}
-            className="tap-flash flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-ink transition-colors active:bg-surface-2"
+            className="tap-flash flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-ink transition-colors active:bg-surface-2"
           >
             <Camera size={15} className="text-accent" /> Take Photo
           </button>
           <button
             onClick={() => galleryInputRef.current?.click()}
-            className="tap-flash flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs text-ink transition-colors active:bg-surface-2"
+            className="tap-flash flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-ink transition-colors active:bg-surface-2"
           >
             <Images size={15} className="text-accent" /> Choose from Gallery
           </button>
@@ -392,11 +395,13 @@ function PhotoSlot({
   )
 }
 
+// A real <label> around the control, so each field has an accessible name and tapping the
+// caption focuses it (every field here wraps a single input/select/textarea).
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div>
-      <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-muted">{label}</label>
+    <label className="block">
+      <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
       {children}
-    </div>
+    </label>
   )
 }

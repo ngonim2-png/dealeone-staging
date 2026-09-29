@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2, Plus, Search, Zap } from 'lucide-react'
 import BackHeader from '../../components/BackHeader'
+import LoadError from '../../components/LoadError'
 import EmptyState from '../../components/EmptyState'
 import { useApp } from '../../context/AppContext'
-import { api } from '../../lib/api'
+import { api, errorMessage } from '../../lib/api'
 import { formatPrice } from '../../lib/format'
+import { useToast } from '../../components/Toast'
 
 const BUYER_REQUEST_PRIORITY_FEE_PER_WEEK = 100
 
@@ -27,24 +29,33 @@ interface FeedRow {
 // geo-matched (buyerRequests/users have no lat/lng — see the API route's comment) — sellers
 // just read the free-text product description themselves, same as a bulletin board.
 function FeedTab() {
+  const toast = useToast()
   const navigate = useNavigate()
   const { currentUser, purchaseBuyerRequestPriority } = useApp()
   const [rows, setRows] = useState<FeedRow[] | null>(null)
   const [hasPriority, setHasPriority] = useState(false)
   const [myListings, setMyListings] = useState<{ id: string; title: string }[]>([])
+  const [myListingsLoaded, setMyListingsLoaded] = useState(false)
   const [respondingId, setRespondingId] = useState<string | null>(null)
-  const [selectedListingId, setSelectedListingId] = useState('')
+  const [pickedListingId, setSelectedListingId] = useState('')
+  // Falls back to the first listing if none was picked yet — the seller's listings load
+  // asynchronously, and tapping "Respond" before they arrived left the choice empty and the
+  // Send button silently disabled.
+  const selectedListingId = pickedListingId || myListings[0]?.id || ''
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [priorityBusy, setPriorityBusy] = useState(false)
 
+  const [loadError, setLoadError] = useState<string | null>(null)
   const load = () => {
+    setLoadError(null)
     api
       .get<{ buyerRequests: FeedRow[]; hasPriority: boolean }>('/api/buyer-requests/feed')
       .then((res) => {
         setRows(res.buyerRequests)
         setHasPriority(res.hasPriority)
       })
+      .catch((err) => setLoadError(errorMessage(err, "Couldn't load buyer requests.")))
   }
 
   useEffect(() => {
@@ -55,6 +66,8 @@ function FeedTab() {
           `/api/listings?sellerId=${currentUser.id}&status=active&radiusKm=25000`,
         )
         .then((res) => setMyListings(res.results.map((r) => r.listing)))
+        .catch((err) => console.error('load my listings failed', err))
+        .finally(() => setMyListingsLoaded(true))
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -77,7 +90,7 @@ function FeedTab() {
       navigate(`/chats/${res.conversationId}`)
     } catch (err) {
       console.error('respond to buyer request failed', err)
-      alert('Could not respond — try again.')
+      toast.error(errorMessage(err, 'Could not send your response — please try again.'))
     } finally {
       setBusy(false)
     }
@@ -90,7 +103,7 @@ function FeedTab() {
       load()
     } catch (err) {
       console.error('purchase buyer request priority failed', err)
-      alert(err instanceof Error ? err.message : 'Could not complete that payment — try again.')
+      toast.error(errorMessage(err, 'Could not complete that payment — please try again.'))
     } finally {
       setPriorityBusy(false)
     }
@@ -116,13 +129,19 @@ function FeedTab() {
           <button
             onClick={buyPriority}
             disabled={priorityBusy}
-            className="tap-flash shrink-0 rounded-full bg-surface-2 px-3 py-1.5 text-[11px] font-medium text-accent transition active:scale-95 disabled:opacity-60"
+            className="tap-flash flex min-h-10 min-w-16 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-accent-2 to-accent px-4 text-xs font-semibold text-white shadow-[0_2px_10px_-2px_rgba(36,91,50,0.5)] transition active:scale-95 disabled:opacity-60"
           >
-            {priorityBusy ? <Loader2 size={12} className="animate-spin" /> : hasPriority ? 'Extend' : 'Buy'}
+            {priorityBusy ? <Loader2 size={14} className="animate-spin" /> : hasPriority ? 'Extend' : 'Get it'}
           </button>
         )}
       </div>
 
+      {loadError && <LoadError message={loadError} onRetry={load} />}
+      {!rows && !loadError && (
+        <div className="flex justify-center py-10 text-muted">
+          <Loader2 size={20} className="animate-spin" />
+        </div>
+      )}
       {rows && rows.length === 0 && (
         <EmptyState icon={Search} title="No open requests right now" hint="Check back later — buyers post what they're looking for here." />
       )}
@@ -139,13 +158,16 @@ function FeedTab() {
           {r.responses > 0 && <p className="mt-1 text-xs text-accent">{r.responses} seller responses so far</p>}
           {respondingId === r.id ? (
             <div className="mt-2 space-y-2">
-              {myListings.length === 0 ? (
-                <p className="text-xs text-bad">You need an active listing to respond.</p>
+              {!myListingsLoaded ? (
+                <p className="text-xs text-muted">Loading your listings…</p>
+              ) : myListings.length === 0 ? (
+                <p className="text-xs text-bad">You need an active listing to respond. Tap Sell to create one.</p>
               ) : (
                 <select
                   value={selectedListingId}
                   onChange={(e) => setSelectedListingId(e.target.value)}
-                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm text-ink outline-none"
+                  aria-label="Listing to respond with"
+                  className="w-full rounded-xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-ink outline-none"
                 >
                   {myListings.map((l) => (
                     <option key={l.id} value={l.id}>
@@ -165,11 +187,11 @@ function FeedTab() {
                 <button
                   onClick={() => respond(r.id)}
                   disabled={busy || !selectedListingId}
-                  className="btn-primary flex-1 py-1.5 text-xs"
+                  className="btn-primary min-h-11 flex-1 text-sm"
                 >
                   {busy ? 'Sending…' : 'Send'}
                 </button>
-                <button onClick={() => setRespondingId(null)} className="btn-secondary flex-1 py-1.5 text-xs">
+                <button onClick={() => setRespondingId(null)} className="btn-secondary min-h-11 flex-1 text-sm">
                   Cancel
                 </button>
               </div>
@@ -177,7 +199,7 @@ function FeedTab() {
           ) : (
             <button
               onClick={() => startResponding(r.id)}
-              className="tap-flash mt-2 rounded-full bg-surface-2 px-3 py-1.5 text-xs text-accent transition active:scale-95"
+              className="tap-flash mt-2 min-h-10 rounded-full bg-surface-2 px-4 text-sm font-medium text-accent transition active:scale-95"
             >
               Respond with a listing
             </button>
@@ -197,17 +219,25 @@ export default function BuyerRequests() {
   const [radiusKm, setRadiusKm] = useState(10)
   const [condition, setCondition] = useState<'new' | 'used' | 'either'>('either')
 
-  const submit = () => {
-    if (!product || !maxOffer) return
-    addBuyerRequest({
-      product,
-      maxOffer: Number(maxOffer),
-      radiusKm,
-      condition,
-    })
-    setProduct('')
-    setMaxOffer('')
-    setOpen(false)
+  const toast = useToast()
+  const [posting, setPosting] = useState(false)
+  // Awaited, and the form is only cleared once the request is actually saved — before,
+  // it was fire-and-forget, so a failure silently threw away what the person typed.
+  const submit = async () => {
+    const amount = Math.round(Number(maxOffer))
+    if (!product.trim() || !(amount > 0) || posting) return
+    setPosting(true)
+    try {
+      await addBuyerRequest({ product: product.trim(), maxOffer: amount, radiusKm, condition })
+      setProduct('')
+      setMaxOffer('')
+      setOpen(false)
+      toast.success('Request posted — sellers nearby can now respond.')
+    } catch (err) {
+      toast.error(errorMessage(err, "Couldn't post your request — please try again."))
+    } finally {
+      setPosting(false)
+    }
   }
 
   return (
@@ -218,7 +248,9 @@ export default function BuyerRequests() {
           tab === 'mine' ? (
             <button
               onClick={() => setOpen((o) => !o)}
-              className="icon-btn h-9 w-9 bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_4px_14px_-4px_rgba(36,91,50,0.6)]"
+              aria-label={open ? 'Close new request form' : 'New buyer request'}
+              aria-expanded={open}
+              className="icon-btn h-11 w-11 bg-gradient-to-b from-accent-2 to-accent text-bg shadow-[0_4px_14px_-4px_rgba(36,91,50,0.6)]"
             >
               <Plus size={16} className={`transition-transform ${open ? 'rotate-45' : ''}`} />
             </button>
@@ -231,7 +263,7 @@ export default function BuyerRequests() {
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`tap-flash rounded-full px-3 py-1.5 text-xs font-medium transition active:scale-95 ${
+            className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs font-medium transition active:scale-95 ${
               tab === t ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
             }`}
           >
@@ -277,7 +309,7 @@ export default function BuyerRequests() {
                     <button
                       key={c}
                       onClick={() => setCondition(c)}
-                      className={`tap-flash rounded-full px-3 py-1.5 text-xs capitalize transition active:scale-95 ${
+                      className={`tap-flash min-h-9 rounded-full px-3.5 py-1.5 text-xs capitalize transition active:scale-95 ${
                         condition === c ? 'glow-accent-ring bg-accent/15 text-accent' : 'bg-surface-2 text-muted'
                       }`}
                     >
@@ -285,7 +317,7 @@ export default function BuyerRequests() {
                     </button>
                   ))}
                 </div>
-                <button onClick={submit} className="btn-primary w-full py-2.5 text-sm">
+                <button onClick={submit} disabled={posting} className="btn-primary min-h-11 w-full py-2.5 text-sm">
                   Submit request
                 </button>
               </div>

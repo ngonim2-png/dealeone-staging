@@ -88,3 +88,10 @@ export function presentListing<
   const { lat, lng } = jitterCoordinate(listing.lat, listing.lng, listing.id)
   return { ...listing, lat, lng }
 }
+
+/** A client-supplied coordinate from a query string, or the fallback if it's missing,
+ * non-numeric, infinite or out of range (e.g. `?lat=1e400` used to reach Postgres). */
+export function safeCoord(raw: unknown, limit: 90 | 180, fallback: number): number {
+  const n = Number(raw)
+  return raw != null && raw !== '' && Number.isFinite(n) && Math.abs(n) <= limit ? n : fallback
+}

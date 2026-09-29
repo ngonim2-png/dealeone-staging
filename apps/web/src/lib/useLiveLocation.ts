@@ -8,7 +8,7 @@
 // only works over HTTPS, so there's always a window (prompt not yet answered, denied,
 // unsupported browser, no signal) where we need a sane default rather than a broken map.
 import { useEffect, useState } from 'react'
-import { USER_LOCATION } from './geo'
+import { USER_LOCATION, distanceKm } from './geo'
 import { reverseGeocode } from './geocode'
 
 export type LocationStatus = 'locating' | 'live' | 'denied' | 'unsupported'
@@ -40,9 +40,27 @@ export function useLiveLocation(): LiveLocation {
       return
     }
     let cancelled = false
+    // Last position we actually committed to state. Phone GPS reports a slightly different
+    // point every second or so even when the phone is lying still (5-30m of noise is
+    // normal), and every committed update re-renders the whole app: the "you are here" dot
+    // and radius circle hop around, and every distance-sorted list (map carousel, List
+    // view, Events) reshuffles its order. That constant twitching was a big part of the app
+    // feeling "shaky" on phones. So a reading only gets through if it's the first fix, or
+    // the device has genuinely moved further than the reading's own noise.
+    let committed: { lat: number; lng: number; accuracy: number } | null = null
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
         if (cancelled) return
+        const { latitude, longitude, accuracy } = pos.coords
+        if (committed) {
+          const movedM = distanceKm(committed.lat, committed.lng, latitude, longitude) * 1000
+          // Ignore a noticeably *worse* reading (e.g. a wifi/cell fallback fix) unless it
+          // moved far enough that it can't just be noise.
+          const noiseM = Math.max(30, Math.min(accuracy, 250) * 0.6)
+          if (movedM < noiseM) return
+          if (accuracy > committed.accuracy * 3 && movedM < 500) return
+        }
+        committed = { lat: latitude, lng: longitude, accuracy }
         setState((s) => ({
           ...s,
           lat: pos.coords.latitude,
@@ -55,7 +73,7 @@ export function useLiveLocation(): LiveLocation {
         // Denied, timed out, or unavailable (e.g. desktop with no location services) —
         // stay on the default Lumley coordinate rather than an error state; the map and
         // distances still work, just not personalized.
-        if (!cancelled) setState((s) => ({ ...s, status: s.status === 'live' ? s.status : 'denied' }))
+        if (!cancelled) setState((s) => (s.status === 'live' || s.status === 'denied' ? s : { ...s, status: 'denied' }))
       },
       { enableHighAccuracy: true, maximumAge: 10_000, timeout: 15_000 },
     )
@@ -73,7 +91,8 @@ export function useLiveLocation(): LiveLocation {
     let cancelled = false
     const controller = new AbortController()
     reverseGeocode(state.lat, state.lng, controller.signal).then((label) => {
-      if (!cancelled && label) setState((s) => ({ ...s, label }))
+      // Same label → return the same state object so nothing re-renders.
+      if (!cancelled && label) setState((s) => (s.label === label ? s : { ...s, label }))
     })
     return () => {
       cancelled = true
