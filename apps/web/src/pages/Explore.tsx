@@ -96,9 +96,9 @@ function BannerCarousel({ lat, lng }: { lat: number; lng: number }) {
         <button
           key={b.id}
           onClick={() => navigate(`/listing/${b.id}`)}
-          className="tap-flash card-elevated card-interactive flex w-64 shrink-0 items-center gap-2 rounded-xl border border-accent/30 bg-accent/5 p-2.5 text-left"
+          className="tap-flash card-elevated card-interactive flex w-64 shrink-0 items-center gap-2 rounded-xl border border-accent/30 bg-accent/5 px-2.5 py-2 text-left"
         >
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-2 text-xl">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-surface-2 text-xl">
             {isImageUrl(b.images[0]) && !lowData ? (
               <img src={mediaSrc(b.images[0], 'thumb')} alt="" className="h-full w-full object-cover" />
             ) : (
@@ -127,6 +127,23 @@ export default function Explore() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [recenterTick, setRecenterTick] = useState(0)
   const carouselRef = useRef<HTMLDivElement>(null)
+  // Height of the cards floating over the map, so MapView can centre within the visible part.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const [overlayHeight, setOverlayHeight] = useState(0)
+  const [navHeight, setNavHeight] = useState(0)
+  useEffect(() => {
+    const el = overlayRef.current
+    const nav = document.querySelector<HTMLElement>('nav[aria-label="Main"]')
+    const measure = () => {
+      if (el) setOverlayHeight(el.offsetHeight)
+      if (nav) setNavHeight(view === 'map' ? nav.offsetHeight : 0)
+    }
+    const ro = new ResizeObserver(measure)
+    if (el) ro.observe(el)
+    if (nav) ro.observe(nav)
+    measure()
+    return () => ro.disconnect()
+  }, [view])
 
   const [query, setQuery] = useState(() => searchParams.get('q') ?? '')
   const t = useT()
@@ -231,6 +248,8 @@ export default function Explore() {
   // the List view's rank mode (rank mode is a "how should the list be sorted" concept — a
   // map doesn't really have an order, so distance is the only sensible default there).
   const mapResults = useMemo(() => [...kindFiltered].sort((a, b) => a.distance - b.distance), [kindFiltered])
+  // Any change to what's being filtered — the map re-frames on the results when this changes.
+  const mapFitKey = JSON.stringify([effectiveFilters, mode, mode === 'search' ? query.trim().toLowerCase() : query, listKind])
   const listResults = useMemo(
     () => rank(kindFiltered, rankMode, sellerRating),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -414,7 +433,7 @@ export default function Explore() {
         })}
       </div>
 
-      <div className="flex items-center gap-2 px-4 pb-3">
+      <div className="flex items-center gap-2 px-4 pb-2">
         <div className="no-scrollbar scroll-fade-x flex flex-1 items-center gap-2 overflow-x-auto">
           {RADIUS_STEPS.map((r) => (
             <button
@@ -450,7 +469,7 @@ export default function Explore() {
       </div>
 
       {/* Map / List toggle — the one control that decides everything below it. */}
-      <div className="flex justify-center pb-3">
+      <div className="flex justify-center pb-2">
         <div className="flex items-center gap-1 rounded-full bg-surface-2 p-1 shadow-inner">
           <button
             onClick={() => setView('map')}
@@ -476,70 +495,99 @@ export default function Explore() {
       </div>
 
       {view === 'map' ? (
-        <>
-          <div className="relative min-h-[150px] flex-1">
-            <MapView
-              listings={mapResults.map((r) => r.listing)}
-              radiusKm={filters.radiusKm === 999 ? 25 : filters.radiusKm}
-              selectedId={selectedId}
-              onSelect={selectFromMap}
-              recenterTrigger={recenterTick}
-              userLocation={userLocation}
-            />
+        // The map fills everything down to the bottom nav; the count, "locate me" button and
+        // swipeable listing cards float over its lower edge (instead of sitting in their own
+        // strip underneath, which used to squeeze the map down to ~150px on most phones).
+        // The map also runs underneath the floating bottom-nav pill (negative margin = nav
+        // height), so the whole screen below the filters is map. `isolate` keeps Leaflet's
+        // internal z-indexes (400+) from painting over the nav.
+        <div className="relative isolate min-h-[240px] flex-1" style={{ marginBottom: -navHeight }}>
+          <MapView
+            listings={mapResults.map((r) => r.listing)}
+            radiusKm={filters.radiusKm === 999 ? 25 : filters.radiusKm}
+            selectedId={selectedId}
+            onSelect={selectFromMap}
+            recenterTrigger={recenterTick}
+            userLocation={userLocation}
+            bottomInset={overlayHeight}
+            topInset={mapResults.length > 0 ? 64 : 0}
+            fitKey={mapFitKey}
+          />
 
-            <div className="absolute bottom-3 right-3 z-[400] flex flex-col gap-2">
+          {mapResults.length === 0 && (
+            <div className="pointer-events-none absolute inset-x-4 top-4 z-[400] rounded-2xl border border-border bg-surface/95 p-4 text-center text-sm shadow-lg backdrop-blur">
+              <p className="text-ink">No matching products within {filters.radiusKm} km.</p>
+              {nextRadius(filters.radiusKm) ? (
+                <button
+                  onClick={expandRadius}
+                  className="btn-primary pointer-events-auto mt-2 px-4 py-1.5 text-xs"
+                >
+                  Expand search to {nextRadius(filters.radiusKm)} km
+                </button>
+              ) : (
+                <p className="mt-1 text-xs text-muted">Try a different category or clear filters.</p>
+              )}
+              {saveSearchButton && (
+                <div className="pointer-events-auto mt-2 flex flex-col items-center gap-1">
+                  <p className="text-[11px] text-muted">{t('explore.saveHint')}</p>
+                  {saveSearchButton}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Count + "locate me" sit along the top edge of the map, leaving the bottom to the
+              cards — so the strip of map you can see between them is as tall as possible. */}
+          {mapResults.length > 0 && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-[400] flex items-start justify-between gap-2 p-3">
+              <span className="rounded-full bg-surface/95 px-3 py-1 text-[11px] font-medium text-ink shadow-md backdrop-blur">
+                {mapResults.length} listing{mapResults.length !== 1 ? 's' : ''} within{' '}
+                {filters.radiusKm === 999 ? 'anywhere' : `${filters.radiusKm} km`} — swipe
+              </span>
               <button
                 onClick={() => setRecenterTick((t) => t + 1)}
                 aria-label="Center on my location"
-                className="tap-flash glow-accent-ring flex h-10 w-10 items-center justify-center rounded-full border border-border bg-surface/95 text-accent shadow-lg backdrop-blur transition-transform active:scale-90"
+                className="tap-flash glow-accent-ring pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border bg-surface/95 text-accent shadow-lg backdrop-blur transition-transform active:scale-90"
               >
                 <LocateFixed size={16} />
               </button>
             </div>
+          )}
 
+          <div
+            ref={overlayRef}
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-[400] flex flex-col gap-2"
+            style={{ paddingBottom: navHeight + 8 }}
+          >
             {mapResults.length === 0 && (
-              <div className="pointer-events-none absolute inset-x-4 top-4 z-[400] rounded-2xl border border-border bg-surface/95 p-4 text-center text-sm shadow-lg backdrop-blur">
-                <p className="text-ink">No matching products within {filters.radiusKm} km.</p>
-                {nextRadius(filters.radiusKm) ? (
-                  <button
-                    onClick={expandRadius}
-                    className="btn-primary pointer-events-auto mt-2 px-4 py-1.5 text-xs"
-                  >
-                    Expand search to {nextRadius(filters.radiusKm)} km
-                  </button>
-                ) : (
-                  <p className="mt-1 text-xs text-muted">Try a different category or clear filters.</p>
-                )}
-                {saveSearchButton && (
-                  <div className="pointer-events-auto mt-2 flex flex-col items-center gap-1">
-                    <p className="text-[11px] text-muted">{t('explore.saveHint')}</p>
-                    {saveSearchButton}
-                  </div>
-                )}
+              <div className="flex justify-end px-3">
+                <button
+                  onClick={() => setRecenterTick((t) => t + 1)}
+                  aria-label="Center on my location"
+                  className="tap-flash glow-accent-ring pointer-events-auto flex h-10 w-10 items-center justify-center rounded-full border border-border bg-surface/95 text-accent shadow-lg backdrop-blur transition-transform active:scale-90"
+                >
+                  <LocateFixed size={16} />
+                </button>
               </div>
             )}
-          </div>
-
-          {mapResults.length > 0 && (
-            <div className="border-t border-border bg-surface pb-1 pt-2">
-              <p className="px-4 pb-2 text-xs text-muted">
-                {mapResults.length} listing{mapResults.length !== 1 ? 's' : ''} within{' '}
-                {filters.radiusKm === 999 ? 'anywhere' : `${filters.radiusKm} km`} — swipe
-              </p>
+            {mapResults.length > 0 && (
               <div
                 ref={carouselRef}
                 onScroll={onCarouselScroll}
-                className="no-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-3"
+                className="no-scrollbar pointer-events-auto flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-3"
               >
                 {mapResults.map(({ listing, distance }) => {
                   const seller = sellers.find((s) => s.id === listing.sellerId)
+                  const active = listing.id === selectedId
                   return (
                     <button
                       key={listing.id}
                       onClick={() => navigate(`/listing/${listing.id}`)}
-                      className="card-elevated card-interactive flex w-[calc(100%-24px)] shrink-0 snap-center items-center gap-3 rounded-2xl bg-surface-2 p-3 text-left"
+                      className={`card-interactive flex w-[calc(100%-28px)] max-w-sm shrink-0 snap-center items-center gap-3 rounded-2xl bg-surface/95 px-2.5 py-2 text-left shadow-[0_8px_24px_-10px_rgba(0,0,0,0.35)] backdrop-blur transition-shadow ${
+                        active ? 'ring-2 ring-accent/60' : 'ring-1 ring-border'
+                      }`}
                     >
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-bg text-2xl">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-surface-2 text-2xl">
                         {isImageUrl(listing.images[0]) && !lowData ? (
                           <img src={mediaSrc(listing.images[0], 'thumb')} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
                         ) : (
@@ -564,9 +612,9 @@ export default function Explore() {
                   )
                 })}
               </div>
-            </div>
-          )}
-        </>
+            )}
+          </div>
+        </div>
       ) : (
         <>
           <div className="flex items-center gap-2 px-4 pb-2">

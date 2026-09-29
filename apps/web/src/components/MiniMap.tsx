@@ -1,6 +1,7 @@
 import { MapContainer, TileLayer, Marker, Circle } from 'react-leaflet'
 import { divIcon } from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { TILE_ATTRIBUTION, TILE_URL } from '../lib/mapTiles'
 
 /** Single-listing map for ListingDetail — a focused, street-level view of one item, unlike
  * MapView's multi-pin city overview. Two modes:
@@ -32,8 +33,8 @@ export default function MiniMap({
       className="h-full w-full"
     >
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-        attribution='&copy; OpenStreetMap &copy; CARTO'
+        url={TILE_URL}
+        attribution={TILE_ATTRIBUTION}
       />
       {precision === 'exact' ? (
         <Marker
